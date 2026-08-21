@@ -3,9 +3,9 @@
 An [issueProvider](https://github.com/super-productivity/super-productivity) plugin that
 **two-way syncs** Microsoft To Do tasks with Super Productivity (SP) projects.
 
-- **Desktop (Electron) only**: the Graph main API has no CORS, so the plugin reaches
-  `graph.microsoft.com` through SP's `nodeExecution` (a Node child process); Web/PWA
-  won't work.
+- **Desktop + mobile + web**: the Graph API returns full CORS headers, so the plugin reaches
+  `graph.microsoft.com` directly over SP's `http` channel (a plain browser request) on every
+  platform — desktop (Electron), native mobile, and web/PWA alike.
 - **Auth**: SP built-in OAuth (Entra ID, Authorization Code + PKCE); refresh tokens renew
   automatically.
 - **Sync**: driven by SP's two-way-sync engine; the plugin only declares field mappings.
@@ -15,7 +15,7 @@ An [issueProvider](https://github.com/super-productivity/super-productivity) plu
 
 ## Requirements
 
-- Super Productivity **18.20+** (desktop)
+- Super Productivity **18.20+** (desktop, native mobile, or web/PWA)
 - A Microsoft Entra ID app registration (for the OAuth `clientId`)
 
 ## 1. Register an Entra ID app (get a clientId)
@@ -86,9 +86,7 @@ npm run typecheck      # optional: type check
 2. Pick the built `dist/ms-todo-provider.zip`. SP **only accepts `.zip`**, and
    `manifest.json` / `plugin.js` / `icon.svg` must be at the **root** of the archive (not
    inside a subfolder).
-3. On first load SP shows a **Node.js execution** consent dialog (the plugin uses it to reach
-   Graph from a Node child process) — choose "Allow".
-4. Go to the task view → create/edit an **issue provider**, type "Microsoft To Do".
+3. Go to the task view → create/edit an **issue provider**, type "Microsoft To Do".
 
 ## 4. Usage
 
@@ -143,7 +141,6 @@ Both directions use the same field mappings (see below).
 
 ## Known limitations
 
-- **Desktop only**: Web/PWA has no `nodeExecution`, so it can't reach Graph.
 - **Timezones**: `dueDay` is written back to `dueDateTime` at UTC midnight; non-UTC users may
   see the date shift in To Do (switch to `dueWithTime` for precision — planned for v2).
 - **Subtasks**: SP subtasks ↔ To Do `checklistItems` is not implemented (a separate collection
@@ -151,8 +148,6 @@ Both directions use the same field mappings (see below).
 - **Tags / time tracking**: To Do has no matching fields, so they don't sync.
 - **Task deep links**: To Do has no stable public task URL; `getIssueLink` points to the web
   app's home page.
-- **Proxy**: the Node child process env is cleared (no `http_proxy`), so system-level proxies
-  won't apply.
 
 ## Development
 
@@ -170,8 +165,8 @@ npm run test:integration # real Graph round-trip (needs MS_TODO_ACCESS_TOKEN + M
 - **Unit tests** (`test/unit/`) cover config parsing, task↔issue mapping, date
   conversion, the field-mapping value transforms, and pagination — no network needed.
 - **Integration test** (`test/integration/`) does a real HTTPS round-trip against
-  Microsoft Graph through a Node child process. It self-skips unless you provide a
-  token + list id:
+  Microsoft Graph through the plugin's HTTP channel (Node's built-in `fetch`). It
+  self-skips unless you provide a token + list id:
 
   ```bash
   # PowerShell
@@ -207,7 +202,7 @@ ms-todo-plugin/
 │   ├── manifest.json
 │   ├── types.ts            # self-contained plugin-api types
 │   ├── i18n.ts             # zh/en runtime localization helper
-│   ├── graph.ts            # executeNodeScript + require('https') Graph client
+│   ├── graph.ts            # Graph client (PluginHttp, desktop + mobile + web)
 │   ├── domain.ts           # pure logic: parseConfig / mapping / fieldMappings
 │   ├── plugin.ts           # registerIssueProvider main logic
 │   └── icon.svg

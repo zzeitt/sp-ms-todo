@@ -1,6 +1,6 @@
-import { describe, it, expect, vi } from 'vitest';
-import { NODE_SCRIPT, graphRequestAll } from '../../src/graph';
-import { runNodeScript } from './helpers/node-bridge';
+import { describe, it, expect } from 'vitest';
+import { graphRequestAll } from '../../src/graph';
+import { makeFetchHttp } from './helpers/fetch-http';
 import type { TodoTask } from '../../src/domain';
 
 // 真实 Graph 集成测试：只有当提供了访问令牌与列表 ID 时才会运行（跳过时不失败）。
@@ -13,17 +13,13 @@ const LIST_ID = process.env.MS_TODO_LIST_ID;
 
 describe.skipIf(!TOKEN || !LIST_ID)('Microsoft Graph integration', () => {
   it('lists tasks from the configured list over a real HTTPS round-trip', async () => {
-    // 用真实 Node 子进程执行 graph.ts 的自包含 https 脚本，走完整 graphRequest 路径。
-    vi.stubGlobal('PluginAPI', {
-      getCurrentLanguage: () => 'en',
-      executeNodeScript: (req: { script: string; args: unknown[] }) =>
-        runNodeScript(NODE_SCRIPT, req.args),
-    });
-
+    // 用 Node 内置 fetch 充当宿主 PluginHttp，走完整 graphRequest → http.request
+    // 路径，对真实 Graph 发请求。
     const tasks = await graphRequestAll<TodoTask>(
       `/me/todo/lists/${LIST_ID}/tasks`,
       TOKEN!,
       10,
+      makeFetchHttp(),
     );
 
     expect(Array.isArray(tasks)).toBe(true);

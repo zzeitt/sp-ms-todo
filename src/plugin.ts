@@ -1,9 +1,10 @@
-// Microsoft To Do issue provider for Super Productivity（桌面端）。
+// Microsoft To Do issue provider for Super Productivity（桌面端 + 移动端 + Web）。
 //
 // 通过 SP 的 issueProvider 一等接口实现，双向同步由宿主 two-way-sync 引擎驱动；
-// 本插件只需：OAuth 配置字段、Graph 读写（走 executeNodeScript）、字段映射。
+// 本插件只需：OAuth 配置字段、Graph 读写、字段映射。
 //
-// 数据路径：Graph 请求经 graph.ts 的 executeNodeScript（Node 子进程），令牌经
+// 数据路径：Graph 请求经 graph.ts 全程走宿主 PluginHttp（`http` 权限，普通浏览器
+// 请求，桌面 / 移动 / Web 三端一致，Graph 返回 CORS）；令牌经
 // PluginAPI.getOAuthToken()（宿主自动 PKCE + refresh）。纯逻辑（配置解析、映射、
 // 字段映射）在 domain.ts，便于单元测试。
 
@@ -65,10 +66,10 @@ interface TodoList {
 // 加载 To Do 列表（登录后由宿主自动调用，用于 listId 下拉）。
 async function loadLists(
   _config: Record<string, unknown>,
-  _http: PluginHttp,
+  http: PluginHttp,
 ): Promise<{ label: string; value: string }[]> {
   const token = await requireToken();
-  const lists = await graphRequestAll<TodoList>('/me/todo/lists', token);
+  const lists = await graphRequestAll<TodoList>('/me/todo/lists', token, 0, http);
   return lists.map((l) => ({ label: l.displayName, value: l.id }));
 }
 
@@ -161,7 +162,8 @@ PluginAPI.registerIssueProvider({
     },
   ],
 
-  // Graph 请求不经过渲染进程 fetch，故返回空头即可（令牌由 requireToken 注入）。
+  // Graph 请求的头（含 Bearer 令牌）由 graphRequest 在每次调用时注入（统一走
+  // PluginHttp），故这里返回空即可。
   getHeaders(_config: Record<string, unknown>): Record<string, string> {
     return {};
   },
@@ -169,7 +171,7 @@ PluginAPI.registerIssueProvider({
   async searchIssues(
     searchTerm: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<PluginSearchResult[]> {
     const { listId, maxTasks } = parseConfig(config);
     const token = await requireToken();
@@ -177,6 +179,7 @@ PluginAPI.registerIssueProvider({
       `/me/todo/lists/${listId}/tasks`,
       token,
       maxTasks,
+      http,
     );
     const term = searchTerm.trim().toLowerCase();
     return tasks
@@ -186,7 +189,7 @@ PluginAPI.registerIssueProvider({
 
   async getNewIssuesForBacklog(
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<PluginSearchResult[]> {
     const { listId, maxTasks } = parseConfig(config);
     const token = await requireToken();
@@ -194,6 +197,7 @@ PluginAPI.registerIssueProvider({
       `/me/todo/lists/${listId}/tasks`,
       token,
       maxTasks,
+      http,
     );
     return tasks.map(mapTaskToSearchResult);
   },
@@ -201,7 +205,7 @@ PluginAPI.registerIssueProvider({
   async getById(
     issueId: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<PluginIssue> {
     const { listId } = parseConfig(config);
     const token = await requireToken();
@@ -209,6 +213,8 @@ PluginAPI.registerIssueProvider({
       'GET',
       `/me/todo/lists/${listId}/tasks/${issueId}`,
       token,
+      undefined,
+      http,
     );
     return mapTaskToIssue(task);
   },
@@ -220,11 +226,11 @@ PluginAPI.registerIssueProvider({
 
   async testConnection(
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<boolean> {
     try {
       const token = await requireToken();
-      await graphRequest('GET', '/me/todo/lists', token);
+      await graphRequest('GET', '/me/todo/lists', token, undefined, http);
       return true;
     } catch {
       return false;
@@ -260,7 +266,7 @@ PluginAPI.registerIssueProvider({
     id: string,
     changes: Record<string, unknown>,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<void> {
     const { listId } = parseConfig(config);
     const token = await requireToken();
@@ -280,13 +286,13 @@ PluginAPI.registerIssueProvider({
     }
 
     if (Object.keys(patch).length === 0) return;
-    await graphRequest('PATCH', `/me/todo/lists/${listId}/tasks/${id}`, token, patch);
+    await graphRequest('PATCH', `/me/todo/lists/${listId}/tasks/${id}`, token, patch, http);
   },
 
   async createIssue(
     title: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<{ issueId: string; issueData: PluginIssue }> {
     const { listId } = parseConfig(config);
     const token = await requireToken();
@@ -295,6 +301,7 @@ PluginAPI.registerIssueProvider({
       `/me/todo/lists/${listId}/tasks`,
       token,
       { title },
+      http,
     );
     return {
       issueId: task.id,
@@ -305,11 +312,11 @@ PluginAPI.registerIssueProvider({
   async deleteIssue(
     id: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<void> {
     const { listId } = parseConfig(config);
     const token = await requireToken();
-    await graphRequest('DELETE', `/me/todo/lists/${listId}/tasks/${id}`, token);
+    await graphRequest('DELETE', `/me/todo/lists/${listId}/tasks/${id}`, token, undefined, http);
   },
 
   extractSyncValues,

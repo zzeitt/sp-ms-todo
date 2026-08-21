@@ -91,8 +91,9 @@ export interface PluginHttpOptions {
   responseType?: 'json' | 'text';
 }
 
-// 本插件通过 executeNodeScript 访问 Graph，不使用渲染进程 fetch，
-// 故 PluginHttp 方法仅作签名占位（宿主仍会注入此对象）。
+// 宿主注入的全平台 HTTP 通道（`http` 权限）。底层是 Angular HttpClient→XHR，桌面
+// Electron / 原生移动端 / Web 三端一致。Graph 返回完整 CORS 头，故此通道可直接
+// 访问 graph.microsoft.com，无需 Node 子进程。
 export interface PluginHttp {
   get<T = unknown>(url: string, options?: PluginHttpOptions): Promise<T>;
   post<T = unknown>(url: string, body: unknown, options?: PluginHttpOptions): Promise<T>;
@@ -176,20 +177,6 @@ export interface IssueProviderPluginDefinition {
   deletedStates?: string[];
 }
 
-export interface PluginNodeScriptRequest {
-  script: string;
-  timeout?: number;
-  args?: unknown[];
-}
-
-export interface PluginNodeScriptResult {
-  success: boolean;
-  result?: unknown;
-  error?: string | { code: string; message: string; details?: unknown };
-  executionTime?: number;
-  resourceUsage?: { peakMemoryMB?: number; cpuTime?: number };
-}
-
 export interface PluginAPI {
   registerIssueProvider(definition: IssueProviderPluginDefinition): void;
   startOAuthFlow(config: OAuthFlowConfig): Promise<{
@@ -201,7 +188,6 @@ export interface PluginAPI {
   clearOAuthToken(): Promise<void>;
   getCurrentLanguage(): string;
   translate(key: string, params?: Record<string, string | number>): string;
-  executeNodeScript?(request: PluginNodeScriptRequest): Promise<PluginNodeScriptResult>;
   log: {
     err: (...args: unknown[]) => void;
     error: (...args: unknown[]) => void;

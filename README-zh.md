@@ -3,15 +3,16 @@
 将 Microsoft To Do 的任务与 Super Productivity（SP）项目**双向同步**的
 [issueProvider](https://github.com/super-productivity/super-productivity) 插件。
 
-- **仅桌面端（Electron）**：Graph 主接口无 CORS，插件通过 SP 的 `nodeExecution`
-  （Node 子进程）访问 `graph.microsoft.com`；Web/PWA 不可用。
+- **桌面端 + 移动端 + Web**：Graph 主接口返回完整 CORS 头，插件在所有平台上都直接
+  通过 SP 的 `http` 通道（普通浏览器请求）访问 `graph.microsoft.com` —— 桌面
+  （Electron）、原生移动端、Web/PWA 一致。
 - **认证**：SP 内置 OAuth（Entra ID，Authorization Code + PKCE），刷新令牌自动续期。
 - **同步**：由 SP 的 two-way-sync 引擎驱动，插件只声明字段映射。
 - **语言**：配置对话框与信息面板跟随 SP 客户端语言（英文 / 简体中文）。
 
 ## 需求
 
-- Super Productivity **18.20+**（桌面版）
+- Super Productivity **18.20+**（桌面版、原生移动端或 Web/PWA）
 - 一个 Microsoft Entra ID 应用注册（用于 OAuth 的 `clientId`）
 
 ## 1. 注册 Entra ID 应用（获取 clientId）
@@ -69,9 +70,7 @@ npm run typecheck      # 可选：类型检查
 1. 打开 SP → 设置 → 插件 → 「从本地加载」。
 2. 选择构建产出的 `dist/ms-todo-provider.zip`。SP **只接受 `.zip`**，且
    `manifest.json` / `plugin.js` / `icon.svg` 必须在压缩包**根目录**（不能套一层文件夹）。
-3. 首次加载会弹出 **Node.js 执行授权**对话框（本插件用它在 Node 子进程里访问
-   Graph），选择「Allow」。
-4. 进入任务视图 → 新建/编辑一个 **issue provider**，类型选「Microsoft To Do」。
+3. 进入任务视图 → 新建/编辑一个 **issue provider**，类型选「Microsoft To Do」。
 
 ## 4. 使用
 
@@ -122,13 +121,11 @@ provider 所属项目，无法按 issue 自动跨项目路由）。要把**不�
 
 ## 已知限制
 
-- **仅桌面端**：Web/PWA 无 `nodeExecution`，无法访问 Graph。
 - **时区**：`dueDay` 以 UTC 午夜写回 `dueDateTime`，非 UTC 用户可能在 To Do 里看到
   日期偏移（如需精确，改用 `dueWithTime`，属 v2）。
 - **子任务**：SP 子任务 ↔ To Do `checklistItems` 未实现（独立集合，字段映射无法表达）。
 - **标签 / 时间追踪**：To Do 无对应字段，不参与同步。
 - **任务深链**：To Do 无稳定公开任务 URL，`getIssueLink` 指向 Web 版应用首页。
-- **代理**：Node 子进程的 env 被清空（无 `http_proxy`），系统级代理不会生效。
 
 ## 开发
 
@@ -145,8 +142,8 @@ npm run test:integration # 真实 Graph 往返（需 MS_TODO_ACCESS_TOKEN + MS_T
 
 - **单元测试**（`test/unit/`）覆盖配置解析、任务↔issue 映射、日期转换、字段映射
   值变换、分页 —— 无需网络。
-- **集成测试**（`test/integration/`）通过 Node 子进程对 Microsoft Graph 做真实
-  HTTPS 往返。未提供令牌 + 列表 ID 时自动跳过：
+- **集成测试**（`test/integration/`）通过插件的 HTTP 通道（Node 内置 `fetch`）对
+  Microsoft Graph 做真实 HTTPS 往返。未提供令牌 + 列表 ID 时自动跳过：
 
   ```bash
   # PowerShell
@@ -182,7 +179,7 @@ ms-todo-plugin/
 │   ├── manifest.json
 │   ├── types.ts            # 自包含的 plugin-api 类型
 │   ├── i18n.ts             # zh/en 运行时多语言辅助
-│   ├── graph.ts            # executeNodeScript + require('https') 的 Graph 客户端
+│   ├── graph.ts            # Graph 客户端（PluginHttp，桌面 + 移动 + Web）
 │   ├── domain.ts           # 纯逻辑：parseConfig / 映射 / fieldMappings
 │   ├── plugin.ts           # registerIssueProvider 主逻辑
 │   └── icon.svg
