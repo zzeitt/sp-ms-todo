@@ -1,0 +1,23 @@
+{
+  "name": "ms-todo-provider",
+  "version": "0.1.0",
+  "description": "Microsoft To Do issue provider plugin for Super Productivity (desktop)",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "bump:patch": "node scripts/bump-version.mjs patch",
+    "bump:minor": "node scripts/bump-version.mjs minor",
+    "bump:major": "node scripts/bump-version.mjs major"
+  },
+  "devDependencies": {
+    "adm-zip": "^0.5.16",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.11"
+  }
+}

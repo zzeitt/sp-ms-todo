@@ -1,0 +1,12 @@
+# 依赖
+node_modules/
+
+# 构建产物（npm run build 重新生成；如需把 zip 纳入仓库分发可删除此行）
+dist/
+
+# 测试覆盖
+coverage/
+
+# 杂项
+*.log
+.DS_Store
