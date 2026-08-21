@@ -26,21 +26,27 @@ An [issueProvider](https://github.com/super-productivity/super-productivity) plu
    Microsoft accounts" (personal Microsoft accounts need the personal-account type for To Do).
 3. After registering, note the "Application (client) ID".
 
-4. Register the redirect URI (**must be done via the Manifest**; the portal forces https for
-   anything that isn't `localhost`, so it won't accept `http://127.0.0.1`): open the
-   **Manifest**, and add one entry to `replyUrlsWithType` whose `type` is `InstalledClient`
-   (**not** `Web`):
+4. Register the redirect URIs (**must be done via the Manifest**; the portal forces https for
+   anything that isn't `localhost`, so it won't accept `http://127.0.0.1`, and custom schemes
+   are likewise easiest here): open the **Manifest**, and add entries to `replyUrlsWithType`
+   whose `type` is `InstalledClient` (**not** `Web`):
 
    ```json
-   {
-     "url": "http://127.0.0.1:53682",
-     "type": "InstalledClient"
-   }
+   "replyUrlsWithType": [
+     { "url": "http://127.0.0.1:53682", "type": "InstalledClient" },
+     { "url": "com.superproductivity.superproductivity:/plugin-oauth-callback", "type": "InstalledClient" },
+     { "url": "com.super-productivity.app:/plugin-oauth-callback", "type": "InstalledClient" }
+   ]
    ```
 
-   SP's Electron loopback requires `127.0.0.1` (not `localhost`) and requires an exact match
-   (Microsoft does not treat the port on `127.0.0.1` as interchangeable), so the port is
-   fixed at 53682.
+   - `http://127.0.0.1:53682` — **desktop** (Electron) loopback. SP requires `127.0.0.1`
+     (not `localhost`) and an exact port match, so the port is fixed at 53682.
+   - `com.superproductivity.superproductivity:/plugin-oauth-callback` — **Android**
+     (SP's applicationId; note the single `/` after the scheme).
+   - `com.super-productivity.app:/plugin-oauth-callback` — **iOS** (SP's bundle id).
+
+   On mobile SP ignores the plugin's desktop loopback URI and uses these app custom schemes
+   instead, so register the one(s) for the platforms you use.
 
 5. In the same manifest set the top-level `"allowPublicClient"` to `true` (equivalent to
    "Authentication → Advanced settings → Allow public client flows"). SP uses Authorization

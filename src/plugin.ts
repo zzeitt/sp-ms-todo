@@ -99,12 +99,15 @@ PluginAPI.registerIssueProvider({
       description: t({
         zh:
           '登录 Microsoft 并授权读写 To Do 任务。需先在 Entra 应用清单登记重定向 URI ' +
-          'http://127.0.0.1:53682（replyUrlsWithType，type 用 InstalledClient），' +
-          '并把 allowPublicClient 设为 true。',
+          '（replyUrlsWithType，type 用 InstalledClient）并把 allowPublicClient 设为 true。' +
+          '桌面端：http://127.0.0.1:53682；Android：com.superproductivity.superproductivity:/plugin-oauth-callback；' +
+          'iOS：com.super-productivity.app:/plugin-oauth-callback。',
         en:
           'Sign in to Microsoft and authorize read/write access to your To Do tasks. ' +
-          'First register the redirect URI http://127.0.0.1:53682 in the Entra app manifest ' +
-          '(replyUrlsWithType, type InstalledClient) and set allowPublicClient to true.',
+          'First register these redirect URIs in the Entra app manifest (replyUrlsWithType, ' +
+          'type InstalledClient) and set allowPublicClient to true. ' +
+          'Desktop: http://127.0.0.1:53682; Android: com.superproductivity.superproductivity:/plugin-oauth-callback; ' +
+          'iOS: com.super-productivity.app:/plugin-oauth-callback.',
       }),
       oauthConfig: {
         authUrl: MS_AUTH_URL,

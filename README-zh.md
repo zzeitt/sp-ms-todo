@@ -21,16 +21,21 @@
 2. 名称随意（如 `sp-ms-todo`）；账户类型选「仅此组织目录中的账户」或「任何组织目录 + 个人 Microsoft 账户」（个人 MSA 用 To Do 需包含个人账户类型）。
 3. 注册完成后，记下「应用程序(客户端) ID」。
 4. 登记重定向 URI（**必须走清单 Manifest**；门户对非 `localhost` 强制 https，不接受
-   `http://127.0.0.1`）：进入「清单(Manifest)」，在 `replyUrlsWithType` 里新增一条，
-   `type` 必须是 `InstalledClient`（不能是 `Web`）：
+   `http://127.0.0.1`，自定义 scheme 也走清单最省事）：进入「清单(Manifest)」，在
+   `replyUrlsWithType` 里新增条目，`type` 必须是 `InstalledClient`（不能是 `Web`）：
    ```json
-   {
-     "url": "http://127.0.0.1:53682",
-     "type": "InstalledClient"
-   }
+   "replyUrlsWithType": [
+     { "url": "http://127.0.0.1:53682", "type": "InstalledClient" },
+     { "url": "com.superproductivity.superproductivity:/plugin-oauth-callback", "type": "InstalledClient" },
+     { "url": "com.super-productivity.app:/plugin-oauth-callback", "type": "InstalledClient" }
+   ]
    ```
-   SP 的 Electron loopback 强制 `127.0.0.1`（不能 `localhost`），且要求精确匹配
-   （微软不把 `127.0.0.1` 的端口视为可互换），故端口固定为 53682。
+   - `http://127.0.0.1:53682` —— **桌面端**（Electron）loopback。SP 强制 `127.0.0.1`
+     （不能 `localhost`）且要求端口精确匹配，故端口固定 53682。
+   - `com.superproductivity.superproductivity:/plugin-oauth-callback` —— **Android**
+     （SP 的 applicationId；注意 scheme 后是单个 `/`）。
+   - `com.super-productivity.app:/plugin-oauth-callback` —— **iOS**（SP 的 bundle id）。
+   移动端 SP 会忽略插件的桌面 loopback URI、改用这些 app scheme，按你实际使用的平台登记即可。
 5. 同清单里把顶层 `"allowPublicClient"` 设为 `true`（对应「身份验证 → 高级设置 →
    允许公共客户端流」）。SP 走 Authorization Code + PKCE、不带 client secret，必须开启。
 6. 「API 权限」确认已含（并授予）`Tasks.ReadWrite` 委托权限；`offline_access` 由
