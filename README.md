@@ -179,7 +179,8 @@ by the bump script). The release flow mirrors zot-tool:
    npm run bump:patch   # or bump:minor / bump:major, or node scripts/bump-version.mjs 1.2.3
    ```
 2. Merge the PR into `main`. The `auto-release` workflow reads `package.json`,
-   creates a `vX.Y.Z` tag, and publishes a GitHub Release.
+   creates a `vX.Y.Z` tag, and publishes a GitHub Release with the built
+   `ms-todo-provider.zip` attached as a download asset.
 
 ## Directory layout
 

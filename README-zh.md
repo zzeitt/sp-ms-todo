@@ -158,7 +158,7 @@ npm run test:integration # 真实 Graph 往返（需 MS_TODO_ACCESS_TOKEN + MS_T
    npm run bump:patch   # 或 bump:minor / bump:major，或 node scripts/bump-version.mjs 1.2.3
    ```
 2. 把 PR 合并到 `main`。`auto-release` workflow 会读 `package.json`，打 `vX.Y.Z`
-   标签并发布 GitHub Release。
+   标签并发布 GitHub Release（自动构建并附上 `ms-todo-provider.zip` 插件包）。
 
 ## 目录结构
 
