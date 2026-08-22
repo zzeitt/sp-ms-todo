@@ -1,9 +1,10 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { graphRequestAll } from '../../src/graph';
+import type { PluginHttp } from '../../src/types';
 
-// graphRequestAll → graphRequest → PluginAPI.executeNodeScript。这里直接脚本化
-// executeNodeScript 的返回值，端到端覆盖：分页循环跟随 nextLink、limit 截断、
-// 绝对 nextLink 直连、以及桥层报错的透传。
+// graphRequestAll → graphRequest → http.request（宿主 PluginHttp）。这里脚本化
+// http.request 的返回值，端到端覆盖：分页循环跟随 nextLink、limit 截断、
+// 绝对 nextLink 直连、以及请求错误的透传。
 
 const BASE = 'https://graph.microsoft.com/v1.0';
 
@@ -17,73 +18,70 @@ interface Call {
   url: string;
 }
 
-function scriptPages(pages: Page[]): { calls: Call[]; fn: (req: unknown) => Promise<unknown> } {
+function httpPages(pages: Page[]): { calls: Call[]; http: PluginHttp } {
   const calls: Call[] = [];
-  const fn = async (req: { script: string; args: unknown[] }) => {
-    const page = pages[calls.length];
-    if (!page) throw new Error('unexpected extra executeNodeScript call');
-    const [method, url] = req.args as [string, string];
-    calls.push({ method, url });
-    return { success: true, result: page };
-  };
-  return { calls, fn };
-}
-
-function stubApi(executeNodeScript: (req: unknown) => Promise<unknown>) {
-  vi.stubGlobal('PluginAPI', {
-    getCurrentLanguage: () => 'en',
-    executeNodeScript,
-  });
+  const http = {
+    request: async <T,>(method: string, url: string) => {
+      const page = pages[calls.length];
+      if (!page) throw new Error('unexpected extra http request');
+      calls.push({ method, url });
+      return page as unknown as T;
+    },
+  } as unknown as PluginHttp;
+  return { calls, http };
 }
 
 describe('graphRequestAll', () => {
   it('follows @odata.nextLink across pages', async () => {
-    const { fn } = scriptPages([
+    const { http } = httpPages([
       { value: [1, 2], '@odata.nextLink': `${BASE}/next?$skiptoken=abc` },
       { value: [3] },
     ]);
-    stubApi(fn);
-    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok')).toEqual([1, 2, 3]);
+    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 0, http)).toEqual([
+      1, 2, 3,
+    ]);
   });
 
   it('passes the absolute nextLink URL through unchanged', async () => {
-    const { calls, fn } = scriptPages([
+    const { calls, http } = httpPages([
       { value: [1], '@odata.nextLink': `${BASE}/next?$skiptoken=abc` },
       { value: [2] },
     ]);
-    stubApi(fn);
-    await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok');
+    await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 0, http);
     expect(calls[0].url).toBe(`${BASE}/me/todo/lists/L/tasks`);
     expect(calls[1].url).toBe(`${BASE}/next?$skiptoken=abc`);
     for (const c of calls) expect(c.method).toBe('GET');
   });
 
   it('stops once the limit is reached (no extra page fetched)', async () => {
-    const { calls, fn } = scriptPages([
+    const { calls, http } = httpPages([
       { value: [1, 2, 3, 4, 5], '@odata.nextLink': `${BASE}/next` },
     ]);
-    stubApi(fn);
-    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 3)).toEqual([1, 2, 3]);
+    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 3, http)).toEqual([
+      1, 2, 3,
+    ]);
     expect(calls.length).toBe(1); // 未再追 nextLink
   });
 
   it('returns empty for an empty page', async () => {
-    const { fn } = scriptPages([{ value: [] }]);
-    stubApi(fn);
-    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok')).toEqual([]);
+    const { http } = httpPages([{ value: [] }]);
+    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 0, http)).toEqual([]);
   });
 
   it('limit 0 means no limit (pulls all pages)', async () => {
-    const { fn } = scriptPages([
+    const { http } = httpPages([
       { value: [1], '@odata.nextLink': `${BASE}/next` },
       { value: [2] },
     ]);
-    stubApi(fn);
-    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 0)).toEqual([1, 2]);
+    expect(await graphRequestAll<number>('/me/todo/lists/L/tasks', 'tok', 0, http)).toEqual([1, 2]);
   });
 
-  it('throws when the bridge reports success:false', async () => {
-    stubApi(async () => ({ success: false, error: 'boom' }));
-    await expect(graphRequestAll<number>('/x', 'tok')).rejects.toThrow('boom');
+  it('propagates http.request errors', async () => {
+    const http = {
+      request: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as PluginHttp;
+    await expect(graphRequestAll<number>('/x', 'tok', 0, http)).rejects.toThrow('boom');
   });
 });

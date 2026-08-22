@@ -58,6 +58,27 @@ export function parseConfig(config: Record<string, unknown>): ParsedConfig {
   return { listId, maxTasks };
 }
 
+// 取 Entra 应用的 clientId：优先用插件配置里的值，否则回退到构建时注入的默认值。
+// 两者都为空时抛错（设备码流没有 clientId 无法发起）。
+export function getClientId(
+  config: Record<string, unknown>,
+  buildTimeDefault = '',
+): string {
+  const fromConfig = (config as { clientId?: string }).clientId?.trim();
+  const id = fromConfig || buildTimeDefault;
+  if (!id) {
+    throw new Error(
+      t({
+        zh:
+          '未配置客户端 ID。请在插件配置中填写，或构建时通过 MS_TODO_CLIENT_ID 环境变量注入。',
+        en:
+          'No Client ID configured. Fill it in the plugin settings, or inject it at build time via the MS_TODO_CLIENT_ID env var.',
+      }),
+    );
+  }
+  return id;
+}
+
 // --- 日期转换 ---
 
 // Graph 的 dueDateTime 形如 { dateTime: 'YYYY-MM-DDTHH:mm:ss.0000000', timeZone }。

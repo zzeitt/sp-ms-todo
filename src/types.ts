@@ -4,17 +4,23 @@
 // 故把这些接口按源码逐字 vendor 进来（字段名/签名与真实 PluginAPI 完全一致，
 // 编译期只做结构校验，运行时由宿主注入真实的 PluginAPI 全局对象）。
 
-export interface OAuthFlowConfig {
-  authUrl: string;
-  tokenUrl: string;
-  clientId: string;
-  clientSecret?: string;
-  mobileClientId?: string;
-  iosClientId?: string;
-  webClientId?: string;
-  scopes: string[];
-  extraAuthParams?: Record<string, string>;
-  redirectUri?: string;
+export interface DialogCfg {
+  title?: string;
+  /** 富文本，宿主做白名单消毒后渲染。 */
+  htmlContent?: string;
+  /** 纯文本内容。 */
+  content?: string;
+  okBtnLabel?: string;
+  cancelBtnLabel?: string;
+  buttons?: { label: string; onClick?: () => void | Promise<void> }[];
+}
+
+export type DialogResult = string | undefined;
+
+export interface SnackCfg {
+  msg: string;
+  type?: 'SUCCESS' | 'ERROR' | 'WARNING' | 'INFO';
+  ico?: string;
 }
 
 export interface PluginSearchResult {
@@ -91,8 +97,9 @@ export interface PluginHttpOptions {
   responseType?: 'json' | 'text';
 }
 
-// 本插件通过 executeNodeScript 访问 Graph，不使用渲染进程 fetch，
-// 故 PluginHttp 方法仅作签名占位（宿主仍会注入此对象）。
+// 宿主注入的全平台 HTTP 通道（`http` 权限）。底层是 Angular HttpClient→XHR，桌面
+// Electron / 原生移动端 / Web 三端一致。Graph 返回完整 CORS 头，故此通道可直接
+// 访问 graph.microsoft.com，无需 Node 子进程。
 export interface PluginHttp {
   get<T = unknown>(url: string, options?: PluginHttpOptions): Promise<T>;
   post<T = unknown>(url: string, body: unknown, options?: PluginHttpOptions): Promise<T>;
@@ -116,8 +123,7 @@ export interface PluginFormField {
     | 'checkbox'
     | 'select'
     | 'multiSelect'
-    | 'link'
-    | 'oauthButton';
+    | 'link';
   label: string;
   required?: boolean;
   description?: string;
@@ -126,7 +132,6 @@ export interface PluginFormField {
   pattern?: string;
   advanced?: boolean;
   showIf?: string;
-  oauthConfig?: OAuthFlowConfig;
   loadOptions?(
     config: Record<string, unknown>,
     http: PluginHttp,
@@ -176,32 +181,15 @@ export interface IssueProviderPluginDefinition {
   deletedStates?: string[];
 }
 
-export interface PluginNodeScriptRequest {
-  script: string;
-  timeout?: number;
-  args?: unknown[];
-}
-
-export interface PluginNodeScriptResult {
-  success: boolean;
-  result?: unknown;
-  error?: string | { code: string; message: string; details?: unknown };
-  executionTime?: number;
-  resourceUsage?: { peakMemoryMB?: number; cpuTime?: number };
-}
-
 export interface PluginAPI {
   registerIssueProvider(definition: IssueProviderPluginDefinition): void;
-  startOAuthFlow(config: OAuthFlowConfig): Promise<{
-    accessToken: string;
-    refreshToken: string;
-    expiresAt: number;
-  }>;
-  getOAuthToken(): Promise<string | null>;
-  clearOAuthToken(): Promise<void>;
+  setSecret(key: string, value: string): Promise<void>;
+  getSecret(key: string): Promise<string | null>;
+  deleteSecret(key: string): Promise<void>;
+  openDialog(dialogCfg: DialogCfg): Promise<DialogResult>;
+  showSnack(snackCfg: SnackCfg): void;
   getCurrentLanguage(): string;
   translate(key: string, params?: Record<string, string | number>): string;
-  executeNodeScript?(request: PluginNodeScriptRequest): Promise<PluginNodeScriptResult>;
   log: {
     err: (...args: unknown[]) => void;
     error: (...args: unknown[]) => void;

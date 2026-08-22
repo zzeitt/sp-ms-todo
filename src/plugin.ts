@@ -1,11 +1,13 @@
-// Microsoft To Do issue provider for Super Productivity（桌面端）。
+// Microsoft To Do issue provider for Super Productivity（桌面端 + 移动端）。
 //
 // 通过 SP 的 issueProvider 一等接口实现，双向同步由宿主 two-way-sync 引擎驱动；
-// 本插件只需：OAuth 配置字段、Graph 读写（走 executeNodeScript）、字段映射。
+// 本插件只需：设备码流登录、Graph 读写、字段映射。
 //
-// 数据路径：Graph 请求经 graph.ts 的 executeNodeScript（Node 子进程），令牌经
-// PluginAPI.getOAuthToken()（宿主自动 PKCE + refresh）。纯逻辑（配置解析、映射、
-// 字段映射）在 domain.ts，便于单元测试。
+// 数据路径：Graph 请求经 graph.ts 全程走宿主 PluginHttp（`http` 权限，普通浏览器
+// 请求，桌面 / 移动 / Web 三端一致，Graph 返回 CORS）。认证走 auth.ts 的设备码流
+// （OAuth 2.0 Device Authorization Grant，不依赖 redirect URI，令牌存
+// PluginAPI.setSecret/getSecret 本地密钥存储，用 refresh token 自动续期）。
+// 纯逻辑（配置解析、映射、字段映射）在 domain.ts，便于单元测试。
 
 import type {
   IssueProviderPluginDefinition,
@@ -17,13 +19,21 @@ import {
   buildDueDateTime,
   extractSyncValues,
   FIELD_MAPPINGS,
+  getClientId,
   mapTaskToIssue,
   mapTaskToSearchResult,
   parseConfig,
   TODO_WEB_URL,
 } from './domain';
 import type { TodoTask } from './domain';
-import { graphRequest, graphRequestAll, requireToken } from './graph';
+import { graphRequest, graphRequestAll } from './graph';
+import {
+  createDeviceCodeDialog,
+  createSecretStore,
+  getAccessToken,
+  runDeviceCodeLogin,
+  SECRET_REFRESH_TOKEN,
+} from './auth';
 import { t } from './i18n';
 
 declare const PluginAPI: {
@@ -37,22 +47,20 @@ declare const PluginAPI: {
   };
 };
 
-// --- OAuth / Graph 常量 ---
-
-const MS_AUTH_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
-const MS_TOKEN_URL = 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
-const SCOPES = ['Tasks.ReadWrite', 'offline_access'];
-
-// SP 的 Electron loopback 强制 127.0.0.1（不能 localhost，避开 ::1），端口 [1024,65535]。
-// 固定端口以便在 Entra 应用注册里精确登记该 redirect URI。
-const REDIRECT_URI = 'http://127.0.0.1:53682';
-
 // 供 esbuild `define` 在构建期注入环境变量（编译期替换，非运行时读取）。
 declare const process: { env: Record<string, string | undefined> };
 
 // 默认 clientId：构建时从环境变量 MS_TODO_CLIENT_ID 注入；未设置则为空串。
-// 运行时用户可在插件配置里用「Client ID」字段覆盖（写入 pluginConfig.oauthOverrides）。
+// 运行时用户可在插件配置里用「Client ID」字段覆盖。
 const CLIENT_ID = process.env.MS_TODO_CLIENT_ID || '';
+
+// 密钥存储（本地、每设备、不进 sync/备份），模块级单例即可。
+const secrets = createSecretStore();
+
+/** 取一个有效的 Graph 访问令牌（未连接时抛「未连接」错误）。 */
+function getToken(config: Record<string, unknown>, http: PluginHttp): Promise<string> {
+  return getAccessToken(getClientId(config, CLIENT_ID), http, secrets);
+}
 
 // --- Graph 数据类型 ---
 
@@ -63,13 +71,20 @@ interface TodoList {
 }
 
 // 加载 To Do 列表（登录后由宿主自动调用，用于 listId 下拉）。
+// 未配置 / 未连接 / 网络失败时返回空数组而非抛错 —— 与 SP 官方 Trello 插件的
+// loadBoards 保持一致：loadOptions 抛错会让宿主把下拉置为 error 态，某些版本还会
+// 反复重试/重渲染，导致配置界面卡死。
 async function loadLists(
-  _config: Record<string, unknown>,
-  _http: PluginHttp,
+  config: Record<string, unknown>,
+  http: PluginHttp,
 ): Promise<{ label: string; value: string }[]> {
-  const token = await requireToken();
-  const lists = await graphRequestAll<TodoList>('/me/todo/lists', token);
-  return lists.map((l) => ({ label: l.displayName, value: l.id }));
+  try {
+    const token = await getToken(config, http);
+    const lists = await graphRequestAll<TodoList>('/me/todo/lists', token, 0, http);
+    return lists.map((l) => ({ label: l.displayName, value: l.id }));
+  } catch {
+    return [];
+  }
 }
 
 // --- 插件注册 ---
@@ -77,41 +92,18 @@ async function loadLists(
 PluginAPI.registerIssueProvider({
   configFields: [
     {
-      key: 'oauthOverrides.clientId',
+      key: 'clientId',
       type: 'input',
       label: t({ zh: '客户端 ID', en: 'Client ID' }),
       description: t({
         zh:
-          '你的 Entra ID 应用「应用程序(客户端) ID」（public client，非机密）。' +
+          '你的 Entra ID 应用「应用程序(客户端) ID」（public client，非机密，无需 redirect URI）。' +
           '构建时若未通过 MS_TODO_CLIENT_ID 环境变量注入，请在此填写，否则无法连接。',
         en:
-          'Your Entra ID application (client) ID — a public client, not a secret. ' +
+          'Your Entra ID application (client) ID — a public client, not a secret, no redirect URI needed. ' +
           'Fill this in if it was not injected at build time via the MS_TODO_CLIENT_ID env var, ' +
           'otherwise you cannot connect.',
       }),
-      required: true,
-    },
-    {
-      key: 'oauth',
-      type: 'oauthButton',
-      label: t({ zh: '连接 Microsoft 账户', en: 'Connect Microsoft account' }),
-      description: t({
-        zh:
-          '登录 Microsoft 并授权读写 To Do 任务。需先在 Entra 应用清单登记重定向 URI ' +
-          'http://127.0.0.1:53682（replyUrlsWithType，type 用 InstalledClient），' +
-          '并把 allowPublicClient 设为 true。',
-        en:
-          'Sign in to Microsoft and authorize read/write access to your To Do tasks. ' +
-          'First register the redirect URI http://127.0.0.1:53682 in the Entra app manifest ' +
-          '(replyUrlsWithType, type InstalledClient) and set allowPublicClient to true.',
-      }),
-      oauthConfig: {
-        authUrl: MS_AUTH_URL,
-        tokenUrl: MS_TOKEN_URL,
-        clientId: CLIENT_ID,
-        scopes: SCOPES,
-        redirectUri: REDIRECT_URI,
-      },
     },
     {
       key: 'listId',
@@ -161,7 +153,8 @@ PluginAPI.registerIssueProvider({
     },
   ],
 
-  // Graph 请求不经过渲染进程 fetch，故返回空头即可（令牌由 requireToken 注入）。
+  // Graph 请求的头（含 Bearer 令牌）由 graphRequest 在每次调用时注入（统一走
+  // PluginHttp），故这里返回空即可。
   getHeaders(_config: Record<string, unknown>): Record<string, string> {
     return {};
   },
@@ -169,46 +162,58 @@ PluginAPI.registerIssueProvider({
   async searchIssues(
     searchTerm: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<PluginSearchResult[]> {
-    const { listId, maxTasks } = parseConfig(config);
-    const token = await requireToken();
-    const tasks = await graphRequestAll<TodoTask>(
-      `/me/todo/lists/${listId}/tasks`,
-      token,
-      maxTasks,
-    );
-    const term = searchTerm.trim().toLowerCase();
-    return tasks
-      .filter((t) => !term || t.title.toLowerCase().includes(term))
-      .map(mapTaskToSearchResult);
+    try {
+      const { listId, maxTasks } = parseConfig(config);
+      const token = await getToken(config, http);
+      const tasks = await graphRequestAll<TodoTask>(
+        `/me/todo/lists/${listId}/tasks`,
+        token,
+        maxTasks,
+        http,
+      );
+      const term = searchTerm.trim().toLowerCase();
+      return tasks
+        .filter((t) => !term || t.title.toLowerCase().includes(term))
+        .map(mapTaskToSearchResult);
+    } catch {
+      return [];
+    }
   },
 
   async getNewIssuesForBacklog(
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<PluginSearchResult[]> {
-    const { listId, maxTasks } = parseConfig(config);
-    const token = await requireToken();
-    const tasks = await graphRequestAll<TodoTask>(
-      `/me/todo/lists/${listId}/tasks`,
-      token,
-      maxTasks,
-    );
-    return tasks.map(mapTaskToSearchResult);
+    try {
+      const { listId, maxTasks } = parseConfig(config);
+      const token = await getToken(config, http);
+      const tasks = await graphRequestAll<TodoTask>(
+        `/me/todo/lists/${listId}/tasks`,
+        token,
+        maxTasks,
+        http,
+      );
+      return tasks.map(mapTaskToSearchResult);
+    } catch {
+      return [];
+    }
   },
 
   async getById(
     issueId: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<PluginIssue> {
     const { listId } = parseConfig(config);
-    const token = await requireToken();
+    const token = await getToken(config, http);
     const task = await graphRequest<TodoTask>(
       'GET',
       `/me/todo/lists/${listId}/tasks/${issueId}`,
       token,
+      undefined,
+      http,
     );
     return mapTaskToIssue(task);
   },
@@ -218,15 +223,21 @@ PluginAPI.registerIssueProvider({
     return TODO_WEB_URL;
   },
 
+  // 「测试连接」按钮复用为登录入口：未登录时先走设备码流，已登录则校验连接。
   async testConnection(
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<boolean> {
     try {
-      const token = await requireToken();
-      await graphRequest('GET', '/me/todo/lists', token);
+      const clientId = getClientId(config, CLIENT_ID);
+      if (!(await secrets.get(SECRET_REFRESH_TOKEN))) {
+        await runDeviceCodeLogin(clientId, http, createDeviceCodeDialog(), secrets);
+      }
+      const token = await getAccessToken(clientId, http, secrets);
+      await graphRequest('GET', '/me/todo/lists', token, undefined, http);
       return true;
-    } catch {
+    } catch (e) {
+      PluginAPI.log.warn('Microsoft To Do connection test failed', e);
       return false;
     }
   },
@@ -260,10 +271,10 @@ PluginAPI.registerIssueProvider({
     id: string,
     changes: Record<string, unknown>,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<void> {
     const { listId } = parseConfig(config);
-    const token = await requireToken();
+    const token = await getToken(config, http);
 
     const patch: Record<string, unknown> = {};
     if (changes.title !== undefined) {
@@ -280,21 +291,22 @@ PluginAPI.registerIssueProvider({
     }
 
     if (Object.keys(patch).length === 0) return;
-    await graphRequest('PATCH', `/me/todo/lists/${listId}/tasks/${id}`, token, patch);
+    await graphRequest('PATCH', `/me/todo/lists/${listId}/tasks/${id}`, token, patch, http);
   },
 
   async createIssue(
     title: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<{ issueId: string; issueData: PluginIssue }> {
     const { listId } = parseConfig(config);
-    const token = await requireToken();
+    const token = await getToken(config, http);
     const task = await graphRequest<TodoTask>(
       'POST',
       `/me/todo/lists/${listId}/tasks`,
       token,
       { title },
+      http,
     );
     return {
       issueId: task.id,
@@ -305,11 +317,11 @@ PluginAPI.registerIssueProvider({
   async deleteIssue(
     id: string,
     config: Record<string, unknown>,
-    _http: PluginHttp,
+    http: PluginHttp,
   ): Promise<void> {
     const { listId } = parseConfig(config);
-    const token = await requireToken();
-    await graphRequest('DELETE', `/me/todo/lists/${listId}/tasks/${id}`, token);
+    const token = await getToken(config, http);
+    await graphRequest('DELETE', `/me/todo/lists/${listId}/tasks/${id}`, token, undefined, http);
   },
 
   extractSyncValues,

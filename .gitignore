@@ -10,3 +10,5 @@ coverage/
 # 杂项
 *.log
 .DS_Store
+
+.claude/

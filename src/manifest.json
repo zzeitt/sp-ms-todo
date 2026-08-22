@@ -4,17 +4,13 @@
   "version": "0.1.0",
   "manifestVersion": 1,
   "minSupVersion": "18.20.0",
-  "description": "Two-way sync Microsoft To Do tasks with Super Productivity (desktop)",
+  "description": "Two-way sync Microsoft To Do tasks with Super Productivity (desktop + mobile)",
   "author": "zeit",
   "type": "issueProvider",
   "icon": "icon.svg",
   "iFrame": false,
-  "permissions": ["oauth", "http", "nodeExecution"],
+  "permissions": ["http"],
   "hooks": [],
-  "nodeScriptConfig": {
-    "timeout": 30000,
-    "memoryLimit": "256MB"
-  },
   "issueProvider": {
     "pollIntervalMs": 300000,
     "icon": "check_circle",
