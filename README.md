@@ -3,11 +3,11 @@
 An [issueProvider](https://github.com/super-productivity/super-productivity) plugin that
 **two-way syncs** Microsoft To Do tasks with Super Productivity (SP) projects.
 
-- **Desktop + mobile + web**: the Graph API returns full CORS headers, so the plugin reaches
-  `graph.microsoft.com` directly over SP's `http` channel (a plain browser request) on every
-  platform — desktop (Electron), native mobile, and web/PWA alike.
-- **Auth**: SP built-in OAuth (Entra ID, Authorization Code + PKCE); refresh tokens renew
-  automatically.
+- **Desktop + mobile**: the Graph API returns full CORS headers, so the plugin reaches
+  `graph.microsoft.com` directly over SP's `http` channel (a plain browser request) on desktop
+  (Electron) and native mobile.
+- **Auth**: OAuth 2.0 device code flow (Entra ID) — no redirect URI to register; refresh
+  tokens renew automatically. Sign-in works on desktop and native mobile.
 - **Sync**: driven by SP's two-way-sync engine; the plugin only declares field mappings.
 - **Language**: the config dialog and info panel follow SP's UI language (English / 简体中文).
 
@@ -15,42 +15,23 @@ An [issueProvider](https://github.com/super-productivity/super-productivity) plu
 
 ## Requirements
 
-- Super Productivity **18.20+** (desktop, native mobile, or web/PWA)
-- A Microsoft Entra ID app registration (for the OAuth `clientId`)
+- Super Productivity **18.20+** (desktop, or native mobile)
+- A Microsoft Entra ID app registration (for the `clientId`) — a public client, no redirect
+  URI needed
 
 ## 1. Register an Entra ID app (get a clientId)
 
 1. Open the [Azure portal → App registrations → New registration](https://portal.azure.com/#view/Microsoft_AAD_RegisteredApps/CreateApplicationBlade).
-2. Name it whatever you like (e.g. `sp-ms-todo`); for account type choose "Accounts in this
-   organizational directory only" or "Accounts in any organizational directory and personal
-   Microsoft accounts" (personal Microsoft accounts need the personal-account type for To Do).
+2. Name it whatever you like (e.g. `sp-ms-todo`); for account type choose "Accounts in any
+   organizational directory and personal Microsoft accounts" (personal MSA needs this type for
+   To Do).
 3. After registering, note the "Application (client) ID".
 
-4. Register the redirect URIs (**must be done via the Manifest**; the portal forces https for
-   anything that isn't `localhost`, so it won't accept `http://127.0.0.1`, and custom schemes
-   are likewise easiest here): open the **Manifest**, and add entries to `replyUrlsWithType`
-   whose `type` is `InstalledClient` (**not** `Web`):
+4. No redirect URI is required — the plugin signs in with the OAuth 2.0 **device code flow**,
+   which never redirects back to the app. Leave `replyUrlsWithType` empty.
 
-   ```json
-   "replyUrlsWithType": [
-     { "url": "http://127.0.0.1:53682", "type": "InstalledClient" },
-     { "url": "com.superproductivity.superproductivity:/plugin-oauth-callback", "type": "InstalledClient" },
-     { "url": "com.super-productivity.app:/plugin-oauth-callback", "type": "InstalledClient" }
-   ]
-   ```
-
-   - `http://127.0.0.1:53682` — **desktop** (Electron) loopback. SP requires `127.0.0.1`
-     (not `localhost`) and an exact port match, so the port is fixed at 53682.
-   - `com.superproductivity.superproductivity:/plugin-oauth-callback` — **Android**
-     (SP's applicationId; note the single `/` after the scheme).
-   - `com.super-productivity.app:/plugin-oauth-callback` — **iOS** (SP's bundle id).
-
-   On mobile SP ignores the plugin's desktop loopback URI and uses these app custom schemes
-   instead, so register the one(s) for the platforms you use.
-
-5. In the same manifest set the top-level `"allowPublicClient"` to `true` (equivalent to
-   "Authentication → Advanced settings → Allow public client flows"). SP uses Authorization
-   Code + PKCE without a client secret, so this must be on.
+5. Enable public client flows: set the Manifest's top-level `"allowPublicClient"` to `true`
+   (equivalent to "Authentication → Advanced settings → Allow public client flows").
 
 6. Under "API permissions" confirm (and grant) the `Tasks.ReadWrite` delegated permission;
    `offline_access` is requested via the `scope` parameter (no need to add it manually).
@@ -60,9 +41,8 @@ An [issueProvider](https://github.com/super-productivity/super-productivity) plu
 The clientId is **not hardcoded** in the source; there are two ways to set it:
 
 **Option A — enter it in the SP UI (recommended)**: the plugin's config dialog has a
-**Client ID** input (mapping to `pluginConfig.oauthOverrides.clientId`). Fill it in before
-connecting; it overrides the build-time default. If you don't use Option B, this field is
-required.
+**Client ID** input (mapping to `pluginConfig.clientId`). Fill it in before connecting; it
+overrides the build-time default.
 
 **Option B — inject at build time as the default**: set `MS_TODO_CLIENT_ID` before building;
 esbuild bakes it into `dist/plugin.js` as the default clientId:
@@ -96,9 +76,10 @@ npm run typecheck      # optional: type check
 
 ## 4. Usage
 
-1. In the provider config click "Connect Microsoft account" and sign in.
-2. Once connected, the "To Do list" dropdown auto-loads; pick a list.
-3. That list's tasks flow into the project backlog; once added as local tasks they two-way
+1. In the provider config click "Test connection" (it doubles as the sign-in button).
+2. A dialog shows a code — open the printed URL in any browser, enter the code, and approve.
+3. Back in SP the "To Do list" dropdown auto-loads; pick a list.
+4. That list's tasks flow into the project backlog; once added as local tasks they two-way
    sync with To Do:
    - completion status, title, notes, and due date sync both ways.
 
@@ -114,12 +95,12 @@ To import **different To Do lists** into **different SP projects**, create **one
 instance per list** and put it in the target project:
 
 1. Open the target project → new issue provider, type "Microsoft To Do".
-2. Pick that list in the "To Do list" dropdown (OAuth is a single sign-in — every instance
-   shares the same Microsoft account and token).
+2. Pick that list in the "To Do list" dropdown (sign-in is shared — every instance of the
+   plugin stores its token under the same `pluginId`, so you sign in once).
 3. Repeat for each (list → project) pair.
 
-> OAuth tokens are keyed by `pluginId`, so multiple instances don't need repeat logins; but
-> each instance's `listId` is independent — make sure you pick the right list per instance.
+> Tokens are keyed by `pluginId` (via `setSecret`), so multiple instances don't need repeat
+> logins; but each instance's `listId` is independent — make sure you pick the right list per instance.
 
 ## 6. Reverse sync (SP → To Do)
 
@@ -147,6 +128,13 @@ Both directions use the same field mappings (see below).
 
 ## Known limitations
 
+- **Web/PWA sign-in**: the device-code token endpoint has no CORS, so sign-in works on desktop
+  and native mobile only (same as every other SP integration — SP shows a cross-origin warning
+  on web).
+- **Personal Microsoft account (MSA)**: device-code flow support for personal accounts is not
+  guaranteed by Microsoft — verify with your account type; work/school accounts are fine.
+- **Refresh token expiry**: the Graph refresh token rolls for 90 days. As long as the plugin
+  syncs at least once every 90 days it renews automatically; after 90 days idle you sign in again.
 - **Timezones**: `dueDay` is written back to `dueDateTime` at UTC midnight; non-UTC users may
   see the date shift in To Do (switch to `dueWithTime` for precision — planned for v2).
 - **Subtasks**: SP subtasks ↔ To Do `checklistItems` is not implemented (a separate collection
@@ -209,6 +197,7 @@ ms-todo-plugin/
 │   ├── types.ts            # self-contained plugin-api types
 │   ├── i18n.ts             # zh/en runtime localization helper
 │   ├── graph.ts            # Graph client (PluginHttp, desktop + mobile + web)
+│   ├── auth.ts             # device-code flow: sign-in + token refresh (setSecret)
 │   ├── domain.ts           # pure logic: parseConfig / mapping / fieldMappings
 │   ├── plugin.ts           # registerIssueProvider main logic
 │   └── icon.svg

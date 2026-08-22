@@ -11,10 +11,8 @@
 // Electron 上授权，移动端 / Web 端会直接把插件拒载（报 NODE_ONLY_DESKTOP）。而
 // Graph 支持 CORS，PluginHttp 已足够，无需绕道 Node 子进程。
 
-import type { PluginAPI as PluginApiType, PluginHttp } from './types';
+import type { PluginHttp } from './types';
 import { t } from './i18n';
-
-declare const PluginAPI: PluginApiType;
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
@@ -86,16 +84,3 @@ export async function graphRequestAll<T>(
   return items;
 }
 
-/** 取一个有效的 Graph 访问令牌，未连接时抛错误。 */
-export async function requireToken(): Promise<string> {
-  const token = await PluginAPI.getOAuthToken();
-  if (!token) {
-    throw new Error(
-      t({
-        zh: '未连接 Microsoft 账户。请先在插件配置中点击「连接 Microsoft 账户」。',
-        en: 'Not connected to a Microsoft account. Click "Connect Microsoft account" in the plugin settings first.',
-      }),
-    );
-  }
-  return token;
-}

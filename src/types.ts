@@ -4,17 +4,23 @@
 // 故把这些接口按源码逐字 vendor 进来（字段名/签名与真实 PluginAPI 完全一致，
 // 编译期只做结构校验，运行时由宿主注入真实的 PluginAPI 全局对象）。
 
-export interface OAuthFlowConfig {
-  authUrl: string;
-  tokenUrl: string;
-  clientId: string;
-  clientSecret?: string;
-  mobileClientId?: string;
-  iosClientId?: string;
-  webClientId?: string;
-  scopes: string[];
-  extraAuthParams?: Record<string, string>;
-  redirectUri?: string;
+export interface DialogCfg {
+  title?: string;
+  /** 富文本，宿主做白名单消毒后渲染。 */
+  htmlContent?: string;
+  /** 纯文本内容。 */
+  content?: string;
+  okBtnLabel?: string;
+  cancelBtnLabel?: string;
+  buttons?: { label: string; onClick?: () => void | Promise<void> }[];
+}
+
+export type DialogResult = string | undefined;
+
+export interface SnackCfg {
+  msg: string;
+  type?: 'SUCCESS' | 'ERROR' | 'WARNING' | 'INFO';
+  ico?: string;
 }
 
 export interface PluginSearchResult {
@@ -117,8 +123,7 @@ export interface PluginFormField {
     | 'checkbox'
     | 'select'
     | 'multiSelect'
-    | 'link'
-    | 'oauthButton';
+    | 'link';
   label: string;
   required?: boolean;
   description?: string;
@@ -127,7 +132,6 @@ export interface PluginFormField {
   pattern?: string;
   advanced?: boolean;
   showIf?: string;
-  oauthConfig?: OAuthFlowConfig;
   loadOptions?(
     config: Record<string, unknown>,
     http: PluginHttp,
@@ -179,13 +183,11 @@ export interface IssueProviderPluginDefinition {
 
 export interface PluginAPI {
   registerIssueProvider(definition: IssueProviderPluginDefinition): void;
-  startOAuthFlow(config: OAuthFlowConfig): Promise<{
-    accessToken: string;
-    refreshToken: string;
-    expiresAt: number;
-  }>;
-  getOAuthToken(): Promise<string | null>;
-  clearOAuthToken(): Promise<void>;
+  setSecret(key: string, value: string): Promise<void>;
+  getSecret(key: string): Promise<string | null>;
+  deleteSecret(key: string): Promise<void>;
+  openDialog(dialogCfg: DialogCfg): Promise<DialogResult>;
+  showSnack(snackCfg: SnackCfg): void;
   getCurrentLanguage(): string;
   translate(key: string, params?: Record<string, string | number>): string;
   log: {

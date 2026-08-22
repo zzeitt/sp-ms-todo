@@ -8,9 +8,11 @@ import { vi } from 'vitest';
 // 因此测试里必须真的把它挂到 globalThis 上。
 vi.stubGlobal('PluginAPI', {
   registerIssueProvider: () => {},
-  startOAuthFlow: async () => ({ accessToken: '', refreshToken: '', expiresAt: 0 }),
-  getOAuthToken: async () => 'test-token',
-  clearOAuthToken: async () => {},
+  setSecret: async () => {},
+  getSecret: async () => null,
+  deleteSecret: async () => {},
+  openDialog: async () => 'OK',
+  showSnack: () => {},
   getCurrentLanguage: () => 'en',
   translate: (key: string) => key,
   log: {
