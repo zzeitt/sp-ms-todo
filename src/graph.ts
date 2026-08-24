@@ -18,6 +18,52 @@ const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
 
 export type GraphMethod = 'GET' | 'POST' | 'PATCH' | 'DELETE';
 
+/** 从宿主 HTTP 错误里挖出可读信息（status + Graph 错误体），避免只显示 [object Object]。 */
+function describeGraphError(e: unknown): string {
+  const err = e as {
+    status?: number;
+    statusText?: string;
+    message?: string;
+    error?: {
+      code?: string;
+      message?: string;
+      error_description?: string;
+      error?: { code?: string; message?: string };
+    };
+  } | null | undefined;
+  if (!err || typeof err !== 'object') {
+    return e instanceof Error ? e.message : String(e);
+  }
+  const parts: string[] = [];
+  if (typeof err.status === 'number') parts.push(`status=${err.status}`);
+  if (err.statusText) parts.push(err.statusText);
+  if (typeof err.message === 'string' && err.message) parts.push(err.message);
+  const inner = err.error?.error ?? err.error;
+  if (inner?.code) parts.push(`code=${inner.code}`);
+  if (inner?.message) parts.push(inner.message);
+  if (err.error?.error_description) parts.push(err.error.error_description);
+  return parts.length ? parts.join(' — ') : String(e);
+}
+
+// Graph 在部分网络环境下较慢，SP PluginHttp 默认 30s 超时太容易误杀。
+const GRAPH_TIMEOUT_MS = 60_000;
+const GRAPH_RETRIES = 2;
+const GRAPH_RETRY_DELAY_MS = 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 判断是否值得重试：超时 / 429 / 5xx / 网络错误。 */
+function isRetryableGraphError(e: unknown): boolean {
+  const status = (e as { status?: number } | null | undefined)?.status;
+  const msg = e instanceof Error ? e.message : String(e);
+  return (
+    (typeof status === 'number' && (status === 429 || status >= 500)) ||
+    /timeout|timed out|network/i.test(msg)
+  );
+}
+
 /** 通过宿主 PluginHttp 执行一次 Graph 请求（桌面 / 移动 / Web 三端通用）。 */
 export async function graphRequest<T>(
   method: GraphMethod,
@@ -43,11 +89,31 @@ export async function graphRequest<T>(
   if (body !== undefined && body !== null) {
     headers['Content-Type'] = 'application/json';
   }
+  const options = { headers, timeout: GRAPH_TIMEOUT_MS };
+  const request = (): Promise<T> => http.request<T>(method, url, body, options);
+
   try {
-    return await http.request<T>(method, url, body, { headers });
+    return await request();
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(t({ zh: 'Graph 请求失败: ', en: 'Graph request failed: ' }) + msg);
+    // GET / DELETE 幂等，超时/网络错误时重试；POST / PATCH 不重试，避免重复创建。
+    if (
+      (method === 'GET' || method === 'DELETE') &&
+      isRetryableGraphError(e)
+    ) {
+      for (let attempt = 1; attempt <= GRAPH_RETRIES; attempt++) {
+        await sleep(GRAPH_RETRY_DELAY_MS * attempt);
+        try {
+          return await request();
+        } catch (retryErr) {
+          e = retryErr;
+        }
+      }
+    }
+    throw new Error(
+      t({ zh: 'Graph 请求失败: ', en: 'Graph request failed: ' }) +
+        describeGraphError(e) +
+        ` [${method} ${url}]`,
+    );
   }
 }
 
@@ -73,9 +139,21 @@ export async function graphRequestAll<T>(
 ): Promise<T[]> {
   let url: string | undefined = path;
   const items: T[] = [];
+  const seenIds = new Set<string>();
   while (url) {
     const res = (await graphRequest('GET', url, token, undefined, http)) as ODataList<T>;
-    items.push(...res.value);
+    for (const item of res.value) {
+      // Graph 的 $skiptoken 分页在列表变化时可能跨页返回同一条目（快照重叠），
+      // 这里按 id 去重，避免同步出重复任务/列表。
+      const id = (item as { id?: unknown } | null | undefined)?.id;
+      if (typeof id === 'string' && id) {
+        if (seenIds.has(id)) {
+          continue;
+        }
+        seenIds.add(id);
+      }
+      items.push(item);
+    }
     if (limit > 0 && items.length >= limit) {
       return items.slice(0, limit);
     }
