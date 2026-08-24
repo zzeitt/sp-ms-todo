@@ -12,7 +12,7 @@
   "permissions": ["http"],
   "hooks": [],
   "issueProvider": {
-    "pollIntervalMs": 300000,
+    "pollIntervalMs": 60000,
     "icon": "check_circle",
     "humanReadableName": "Microsoft To Do",
     "issueStrings": { "singular": "任务", "plural": "任务" },

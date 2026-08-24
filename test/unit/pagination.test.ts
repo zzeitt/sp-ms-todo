@@ -84,4 +84,23 @@ describe('graphRequestAll', () => {
     } as unknown as PluginHttp;
     await expect(graphRequestAll<number>('/x', 'tok', 0, http)).rejects.toThrow('boom');
   });
+
+  it('dedups entries sharing the same id across pages (skiptoken overlap)', async () => {
+    const { http } = httpPages([
+      { value: [{ id: 'a' }, { id: 'b' }], '@odata.nextLink': `${BASE}/next` },
+      { value: [{ id: 'b' }, { id: 'c' }] },
+    ]);
+    const res = await graphRequestAll<{ id: string }>(
+      '/me/todo/lists/L/tasks',
+      'tok',
+      0,
+      http,
+    );
+    expect(res.map((x) => x.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('dedup does not drop items without a string id', async () => {
+    const { http } = httpPages([{ value: [1, 2, 3] }]);
+    expect(await graphRequestAll<number>('/x', 'tok', 0, http)).toEqual([1, 2, 3]);
+  });
 });

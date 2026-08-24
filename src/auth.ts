@@ -76,6 +76,7 @@ async function postForm<T>(
 ): Promise<T> {
   return http.post<T>(url, toFormBody(params), {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 60_000,
   });
 }
 
