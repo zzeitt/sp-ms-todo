@@ -79,7 +79,15 @@ async function loadLists(
   http: PluginHttp,
 ): Promise<{ label: string; value: string }[]> {
   try {
-    const token = await getToken(config, http);
+    const clientId = getClientId(config, CLIENT_ID);
+    // 已配置/已同步的 provider 在本设备可能还没有登录态（setSecret 每设备本地、
+    // 不随 SP 同步）。此时先走一次设备码登录，否则永远拉不到列表。而 SP 的
+    // 「测试连接」按钮只在新建 provider 时显示，已存在（编辑态）的 provider 没有
+    // 登录入口，所以登录只能挂在这里（列表下拉的 loadOptions 触发）。
+    if (!(await secrets.get(SECRET_REFRESH_TOKEN))) {
+      await runDeviceCodeLogin(clientId, http, createDeviceCodeDialog(), secrets);
+    }
+    const token = await getAccessToken(clientId, http, secrets);
     const lists = await graphRequestAll<TodoList>('/me/todo/lists', token, 0, http);
     return lists.map((l) => ({ label: l.displayName, value: l.id }));
   } catch {
