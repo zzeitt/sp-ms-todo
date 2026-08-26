@@ -65,4 +65,15 @@ describe('graphRequest via PluginHttp', () => {
     } as unknown as PluginHttp;
     await expect(graphRequest('GET', '/x', 'tok', undefined, http)).rejects.toThrow('boom');
   });
+
+  it('preserves the HTTP status on the thrown error so the host can detect 404/410', async () => {
+    const http = {
+      request: async () => {
+        throw Object.assign(new Error('not found'), { status: 404 });
+      },
+    } as unknown as PluginHttp;
+    await expect(
+      graphRequest('GET', '/me/todo/lists/l1/tasks/t1', 'tok', undefined, http),
+    ).rejects.toMatchObject({ status: 404 });
+  });
 });
