@@ -54,8 +54,8 @@ $env:MS_TODO_CLIENT_ID = 'your Entra app clientId'
 export MS_TODO_CLIENT_ID='your Entra app clientId'
 ```
 
-> The `clientId` is a public client, **not a secret** (RFC 8252); security comes from
-> PKCE + the registered redirect URI.
+> The `clientId` is a public client, **not a secret** (RFC 8252); device code flow needs no
+> client secret or redirect URI — the user approves the device code at the verification URI.
 
 Then build:
 
