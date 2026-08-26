@@ -109,11 +109,18 @@ export async function graphRequest<T>(
         }
       }
     }
-    throw new Error(
+    // 保留宿主 PluginHttp 提供的机器可读 status（404/410 = 远端已删除等），
+    // 否则宿主 two-way-sync 只能用字符串去猜「该项已不存在」还是别的错误。
+    const status = (e as { status?: unknown } | null | undefined)?.status;
+    const err = new Error(
       t({ zh: 'Graph 请求失败: ', en: 'Graph request failed: ' }) +
         describeGraphError(e) +
         ` [${method} ${url}]`,
     );
+    if (typeof status === 'number') {
+      (err as { status?: number }).status = status;
+    }
+    throw err;
   }
 }
 
