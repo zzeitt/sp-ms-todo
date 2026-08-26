@@ -44,7 +44,7 @@ $env:MS_TODO_CLIENT_ID = '你的 Entra 应用 clientId'
 export MS_TODO_CLIENT_ID='你的 Entra 应用 clientId'
 ```
 
-> `clientId` 是 public client，**不是机密**（RFC 8252）；真正的安全由 PKCE + 注册的重定向 URI 保证。
+> `clientId` 是 public client，**不是机密**（RFC 8252）；设备码流不需要 client secret，也没有重定向 URI —— 用户在验证页确认设备码即完成授权。
 
 然后构建：
 
