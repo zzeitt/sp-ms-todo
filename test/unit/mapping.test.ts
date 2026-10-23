@@ -4,6 +4,9 @@ import {
   mapTaskToSearchResult,
   extractDueDate,
   buildDueDateTime,
+  buildDueDateTimeFromTs,
+  extractDueWithTime,
+  formatDueDisplay,
   extractSyncValues,
   TODO_WEB_URL,
 } from '../../src/domain';
@@ -44,6 +47,73 @@ describe('buildDueDateTime', () => {
   });
 });
 
+describe('buildDueDateTimeFromTs', () => {
+  it('builds a UTC wall-clock from a timestamp', () => {
+    const ms = Date.UTC(2026, 7, 21, 6, 30, 45);
+    expect(buildDueDateTimeFromTs(ms)).toEqual({
+      dateTime: '2026-08-21T06:30:45.0000000',
+      timeZone: 'UTC',
+    });
+  });
+
+  it('returns null for non-number / null / undefined', () => {
+    expect(buildDueDateTimeFromTs(null)).toBeNull();
+    expect(buildDueDateTimeFromTs(undefined)).toBeNull();
+    expect(buildDueDateTimeFromTs(Number.NaN)).toBeNull();
+  });
+});
+
+describe('extractDueWithTime', () => {
+  it('returns undefined for midnight (date-only reminder)', () => {
+    expect(
+      extractDueWithTime({ dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' }),
+    ).toBeUndefined();
+    expect(
+      extractDueWithTime({
+        dateTime: '2026-08-21T00:00:00.0000000',
+        timeZone: 'China Standard Time',
+      }),
+    ).toBeUndefined();
+  });
+
+  it('parses a UTC-tagged time as UTC', () => {
+    expect(
+      extractDueWithTime({ dateTime: '2026-08-21T06:30:00.0000000', timeZone: 'UTC' }),
+    ).toBe(Date.UTC(2026, 7, 21, 6, 30, 0));
+  });
+
+  it('parses a non-UTC time as device-local wall-clock', () => {
+    const due = { dateTime: '2026-08-21T14:00:00.0000000', timeZone: 'China Standard Time' };
+    expect(extractDueWithTime(due)).toBe(new Date(2026, 7, 21, 14, 0, 0).getTime());
+  });
+
+  it('returns undefined for missing / null / empty / malformed', () => {
+    expect(extractDueWithTime(undefined)).toBeUndefined();
+    expect(extractDueWithTime(null)).toBeUndefined();
+    expect(extractDueWithTime({ dateTime: '', timeZone: 'UTC' })).toBeUndefined();
+    expect(extractDueWithTime({ dateTime: 'not-a-date', timeZone: 'UTC' })).toBeUndefined();
+  });
+});
+
+describe('formatDueDisplay', () => {
+  it('shows date only for midnight', () => {
+    expect(
+      formatDueDisplay({ dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' }),
+    ).toBe('2026-08-21');
+  });
+
+  it('shows date + time for a timed reminder', () => {
+    expect(
+      formatDueDisplay({ dateTime: '2026-08-21T14:05:00.0000000', timeZone: 'UTC' }),
+    ).toBe('2026-08-21 14:05');
+  });
+
+  it('returns undefined when absent', () => {
+    expect(formatDueDisplay(undefined)).toBeUndefined();
+    expect(formatDueDisplay(null)).toBeUndefined();
+  });
+});
+
 describe('mapTaskToIssue', () => {
   it('maps core fields with sensible defaults', () => {
     const issue = mapTaskToIssue(baseTask);
@@ -76,6 +146,26 @@ describe('mapTaskToIssue', () => {
 
   it('leaves lastUpdated undefined when absent', () => {
     expect(mapTaskToIssue(baseTask).lastUpdated).toBeUndefined();
+  });
+
+  it('emits dueWithTime (not dueDate) for a timed reminder', () => {
+    const issue = mapTaskToIssue({
+      ...baseTask,
+      dueDateTime: { dateTime: '2026-08-21T14:00:00.0000000', timeZone: 'UTC' },
+    });
+    expect(issue.dueWithTime).toBe(Date.UTC(2026, 7, 21, 14, 0, 0));
+    expect(issue.dueDate).toBeUndefined();
+    expect(issue.dueDisplay).toBe('2026-08-21 14:00');
+  });
+
+  it('emits dueDate (not dueWithTime) for a date-only reminder', () => {
+    const issue = mapTaskToIssue({
+      ...baseTask,
+      dueDateTime: { dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' },
+    });
+    expect(issue.dueDate).toBe('2026-08-21');
+    expect(issue.dueWithTime).toBeUndefined();
+    expect(issue.dueDisplay).toBe('2026-08-21');
   });
 });
 
@@ -113,6 +203,18 @@ describe('extractSyncValues', () => {
       title: 'T',
       body: '',
       dueDate: null,
+      dueWithTime: null,
+    });
+  });
+
+  it('passes through a numeric dueWithTime', () => {
+    const ms = Date.UTC(2026, 7, 21, 14, 0, 0);
+    expect(extractSyncValues({ id: 'x', title: 'T', dueWithTime: ms })).toEqual({
+      state: undefined,
+      title: 'T',
+      body: '',
+      dueDate: null,
+      dueWithTime: ms,
     });
   });
 });

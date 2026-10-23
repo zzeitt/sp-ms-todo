@@ -54,15 +54,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** 判断是否值得重试：超时 / 429 / 5xx / 网络错误。 */
+/** 判断是否值得重试：超时 / 429 / 5xx / 408 / status=0（宿主网络层失败）/ 网络错误。 */
 function isRetryableGraphError(e: unknown): boolean {
   const status = (e as { status?: number } | null | undefined)?.status;
   const msg = e instanceof Error ? e.message : String(e);
   return (
-    (typeof status === 'number' && (status === 429 || status >= 500)) ||
+    (typeof status === 'number' && (status === 0 || status === 408 || status === 429 || status >= 500)) ||
     /timeout|timed out|network/i.test(msg)
   );
 }
+
+/** 幂等写成（PATCH 同体重复执行结果相同）可安全重试；POST 不重试，避免重复创建。 */
+const RETRYABLE_METHODS: ReadonlySet<GraphMethod> = new Set<GraphMethod>(['GET', 'DELETE', 'PATCH']);
 
 /** 通过宿主 PluginHttp 执行一次 Graph 请求（桌面 / 移动 / Web 三端通用）。 */
 export async function graphRequest<T>(
@@ -95,11 +98,8 @@ export async function graphRequest<T>(
   try {
     return await request();
   } catch (e) {
-    // GET / DELETE 幂等，超时/网络错误时重试；POST / PATCH 不重试，避免重复创建。
-    if (
-      (method === 'GET' || method === 'DELETE') &&
-      isRetryableGraphError(e)
-    ) {
+    // GET / DELETE / PATCH 幂等，超时/网络错误时重试；POST 不重试，避免重复创建。
+    if (RETRYABLE_METHODS.has(method) && isRetryableGraphError(e)) {
       for (let attempt = 1; attempt <= GRAPH_RETRIES; attempt++) {
         await sleep(GRAPH_RETRY_DELAY_MS * attempt);
         try {
@@ -164,6 +164,40 @@ export async function graphRequestAll<T>(
     if (limit > 0 && items.length >= limit) {
       return items.slice(0, limit);
     }
+    url = res['@odata.nextLink'];
+  }
+  return items;
+}
+
+/**
+ * 分页拉取，直到 `isSatisfied(items)` 为 true、没有下一页、或达到 `maxPages`。
+ *
+ * 供 `getByIds` 使用：只需要覆盖“这一轮请求过的 id”，不必被 maxTasks 截断
+ * （否则超大列表里排在后面的任务永远刷不到），也不必无上限地把上万条拉完。
+ */
+export async function graphRequestPagesUntil<T>(
+  path: string,
+  token: string,
+  http: PluginHttp | undefined,
+  isSatisfied: (items: T[]) => boolean,
+  maxPages = 40,
+): Promise<T[]> {
+  let url: string | undefined = path;
+  const items: T[] = [];
+  const seenIds = new Set<string>();
+  let pages = 0;
+  while (url && pages < maxPages) {
+    const res = (await graphRequest('GET', url, token, undefined, http)) as ODataList<T>;
+    for (const item of res.value) {
+      const id = (item as { id?: unknown } | null | undefined)?.id;
+      if (typeof id === 'string' && id) {
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+      }
+      items.push(item);
+    }
+    pages++;
+    if (isSatisfied(items)) break;
     url = res['@odata.nextLink'];
   }
   return items;

@@ -3,19 +3,28 @@
 An [issueProvider](https://github.com/super-productivity/super-productivity) plugin that
 **two-way syncs** Microsoft To Do tasks with Super Productivity (SP) projects.
 
-- **Desktop + mobile**: the Graph API returns full CORS headers, so the plugin reaches
-  `graph.microsoft.com` directly over SP's `http` channel (a plain browser request) on desktop
-  (Electron) and native mobile.
+- **Cross-platform**: reads and writes both go over SP's `http` channel (Angular HttpClient →
+  XHR), so the plugin runs on desktop, mobile, and web. No `nodeExecution` permission is used,
+  so it is **not** rejected on mobile.
+- **Desktop writes**: Graph write requests (create / update / delete) can still be blocked in
+  the desktop renderer by SP's CORS preflight handling (`status=0 Unknown Error`) — a host
+  limitation the plugin can't bypass without `nodeExecution` (which would break mobile).
 - **Auth**: OAuth 2.0 device code flow (Entra ID) — no redirect URI to register; refresh
-  tokens renew automatically. Sign-in works on desktop and native mobile.
+  tokens renew automatically.
 - **Sync**: driven by SP's two-way-sync engine; the plugin only declares field mappings.
 - **Language**: the config dialog and info panel follow SP's UI language (English / 简体中文).
+
+> ⚠️ On the desktop renderer, Graph **write requests** (create / update / delete) can fail
+> with `status=0 Unknown Error` (SP's Electron CORS-preflight handling). The plugin
+> deliberately does **not** use `nodeExecution` (which would fix desktop writes but make SP
+> reject the plugin on mobile / web), so **mobile works fully**; desktop auto-create is
+> affected by this host-level limitation.
 
 > 中文说明见 [README-zh.md](README-zh.md)。
 
 ## Requirements
 
-- Super Productivity **18.20+** (desktop, or native mobile)
+- Super Productivity **18.20+** (desktop, mobile, or web)
 - A Microsoft Entra ID app registration (for the `clientId`) — a public client, no redirect
   URI needed
 
@@ -62,7 +71,7 @@ Then build:
 ```bash
 cd ms-todo-plugin
 npm install
-npm run build          # produces dist/ (plugin.js + manifest.json + icon.svg + ms-todo-provider.zip)
+npm run build          # produces dist/ (plugin.js + manifest.json + icon.svg + index.html + ms-todo-provider.zip)
 npm run typecheck      # optional: type check
 ```
 
@@ -81,7 +90,7 @@ npm run typecheck      # optional: type check
 3. Back in SP the "To Do list" dropdown auto-loads; pick a list.
 4. That list's tasks flow into the project backlog; once added as local tasks they two-way
    sync with To Do:
-   - completion status, title, notes, and due date sync both ways.
+   - completion status, title, notes, due date, and due time sync both ways.
 
 > The provider pulls tasks in pages and, by default, stops at **200** tasks per list to
 > avoid lag on huge lists. Change the **"Max tasks to load"** dropdown
@@ -117,6 +126,89 @@ Tasks created in SP can flow back to To Do in two ways:
 
 Both directions use the same field mappings (see below).
 
+### Completion push safety net (0.1.4+)
+
+SP only pushes on task-update actions and does not retry transient failures (network /
+desktop CORS `status=0`), and it skips a push when the remote changed since the last
+synced baseline. From 0.1.4 the plugin adds a `taskUpdate` hook safety net: 4 s after a
+local completion it checks whether SP already wrote
+`issueLastSyncedValues.state = completed`; if not, the plugin fetches the issue, PATCHes
+`status=completed` itself (idempotent, now retried) and writes the baseline back. Failures
+surface in a snackbar and the plugin log, and the **Reconcile** tab repairs them later.
+
+Pulling is batched too: the plugin implements `getByIds`, so one refresh cycle costs one
+paginated list fetch instead of one GET per linked task (which used to starve the tail of
+the cycle once hundreds of tasks were linked).
+
+## Force sync & dead-link detection (the plugin's standalone view)
+
+To manually (re)push a task that failed to auto-create, and to chase down recurring
+`404 ErrorItemNotFound` errors, the plugin provides a **standalone view** (`index.html`, i.e.
+SP's "column" page) that gathers every action and its **progress output** in one place —
+no more "select a task + top-toolbar button".
+
+You can trigger the sync two ways:
+
+- **One-click sync (top toolbar)**: click the **"Sync Microsoft To Do"** button (the
+  `check_box` icon) in the top toolbar. It pushes every unsynced task in the current scope
+  (the current project, or all projects when not in a project view) to its bound To Do list,
+  with a start/end snackbar — no need to open the view. (The header button can't show a
+  per-task progress log; for that, use the standalone view below.)
+- **Standalone view (full detail + progress)**: open the **"Microsoft To Do"** entry from the
+  left menu (desktop) or the left sidenav drawer (mobile). The view groups every action —
+  push, link scan, cleanup — with inline progress output.
+
+> The top toolbar used to carry a second, duplicate entry (the side-panel button, which the
+> host renders as a colored plugin icon and auto-opens the panel before any `onClick`). It was
+> removed because it duplicated the standalone view and rendered as a blank panel on mobile
+> (host issue #8394).
+
+> View-entry registration is wrapped in `PluginAPI.onReady`, fired by the host after the
+> plugin finishes loading — matching the `Goals Vision Board` plugin (which works on both
+> mobile and desktop) so the entries don't get lost on mobile.
+
+> 📱 **Device-local install**: SP stores uploaded plugin **code** (`plugin.js` / `index.html`)
+> in each device's own IndexedDB cache — it does **not** sync across devices (only the
+> plugin's enabled/disabled flag syncs). So after updating the build you must **install the
+> new `ms-todo-provider.zip` on each device again** (desktop *and* mobile). To confirm a
+> device is running the current build, open the view: the status bar ends with
+> **`插件 v0.x.y`**, and the plugin log (Settings → Plugins) shows
+> `[ms-todo 0.x.y] plugin.js executing` / `onReady fired` / `registerHeaderButton ok` /
+> `registerMenuEntry ok`. If the version is old or those lines are missing, re-install
+> the ZIP on that device.
+
+The view is split into five functional tabs:
+
+- **Push**: lists **unsynced** local tasks (auto-create failures with no `issueId`), each
+  showing title / project / tags / notes / due date & time. You can **multi-select** and press
+  "Push selected" for a batch push, or push a single row. Pushing POSTs the task (title /
+  notes / due date & time / completion status) to the configured To Do list and writes back
+  the `issueId` to complete the link — **no need to select an SP task first** (fixing the old
+  "please select…" false report).
+- **Linked**: the plugin's currently-synced tasks; the `MS id` is truncated with an ellipsis
+  and shown in full on hover.
+- **Dead links**: click "Scan" to GET each locally-linked task in the current project and list
+  the ones that no longer exist in To Do. Delete those local tasks to stop the recurring 404.
+- **Reconcile**: scan every linked task for a **completion divergence** (local `isDone` vs the
+  last synced baseline `issueLastSyncedValues.state`) and fix each one: remote completed →
+  tick locally; local completed → push `completed`; both completed → rewrite the baseline only.
+  Each row shows the action taken and any error, so missed pushes and stale baselines can be
+  repaired without waiting for the next poll.
+- **Cleanup**: browse To Do tasks per list with inline actions — unlink already-linked tasks
+  (back to Push), or delete the remote task for unlinked ones (with a confirmation step).
+- The status bar shows the **human-readable list name / project name / task count**; when not
+  connected or no list is chosen it shows setup guidance; the bottom **log** prints the result
+  of every action inline.
+
+> Each tab targets the **current project** (i.e. the **currently configured list** for this
+> provider instance). If you sync multiple lists, open the view once per project and run them
+> there.
+
+> "Push" / "Scan" still go through `PluginAPI.request` (the manifest declares `http` +
+> `allowedHosts`, backed by the same host channel as the issueProvider-injected `http`, with
+> no `nodeExecution`), so they work on desktop, mobile, and web. On desktop they are subject
+> to the same `status=0` CORS-preflight limitation as auto-create (see Known limitations).
+
 ## Field mappings
 
 | SP task | To Do task | Direction |
@@ -124,10 +216,16 @@ Both directions use the same field mappings (see below).
 | `isDone` | `status` (`completed` / `notStarted`) | both |
 | `title` | `title` | both |
 | `notes` | `body.content` (`text`) | both |
-| `dueDay` | `dueDateTime` | both |
+| `dueDay` | `dueDateTime` (date-only) | both |
+| `dueWithTime` | `dueDateTime` (date + time) | both |
 
 ## Known limitations
 
+- **Desktop write requests**: SP's Electron renderer CORS-preflight handling can block Graph
+  writes (`status=0 Unknown Error`), so "Auto-create issues for new tasks" and the view's
+  "Push" action may fail on desktop. This is a host-level limitation the plugin can't bypass without
+  the `nodeExecution` permission — which would make SP reject the plugin on mobile — so mobile
+  compatibility is kept instead.
 - **Web/PWA sign-in**: the device-code token endpoint has no CORS, so sign-in works on desktop
   and native mobile only (same as every other SP integration — SP shows a cross-origin warning
   on web).
@@ -135,8 +233,12 @@ Both directions use the same field mappings (see below).
   guaranteed by Microsoft — verify with your account type; work/school accounts are fine.
 - **Refresh token expiry**: the Graph refresh token rolls for 90 days. As long as the plugin
   syncs at least once every 90 days it renews automatically; after 90 days idle you sign in again.
-- **Timezones**: `dueDay` is written back to `dueDateTime` at UTC midnight; non-UTC users may
-  see the date shift in To Do (switch to `dueWithTime` for precision — planned for v2).
+- **Timezones**: a To Do reminder that only has a *date* (no time) is stored by Microsoft as
+  that day's local midnight, so the plugin distinguishes date-only vs. date+time by whether the
+  time is `00:00` — a timed reminder set exactly at midnight is treated as date-only. Times are
+  parsed in the reminder's own timezone (`UTC` is parsed as UTC; anything else as the device's
+  local wall-clock), and `dueWithTime` is written back to Graph as UTC; if your To Do timezone
+  differs from your device timezone, times may shift.
 - **Subtasks**: SP subtasks ↔ To Do `checklistItems` is not implemented (a separate collection
   that field mappings can't express).
 - **Tags / time tracking**: To Do has no matching fields, so they don't sync.
@@ -200,7 +302,9 @@ ms-todo-plugin/
 │   ├── graph.ts            # Graph client (PluginHttp, desktop + mobile + web)
 │   ├── auth.ts             # device-code flow: sign-in + token refresh (setSecret)
 │   ├── domain.ts           # pure logic: parseConfig / mapping / fieldMappings
-│   ├── plugin.ts           # registerIssueProvider main logic
+│   ├── force-sync.ts       # pure logic: force-sync + dead-link detection (task selection)
+│   ├── plugin.ts           # registerIssueProvider main logic + view RPC bridge
+│   ├── index.html          # standalone view (force sync / dead-link scan / progress log)
 │   └── icon.svg
 ├── test/
 │   ├── unit/               # pure-logic unit tests

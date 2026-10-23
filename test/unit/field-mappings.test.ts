@@ -10,9 +10,10 @@ function mappingFor(taskField: string) {
 const ctx = { issueId: 'i', issueNumber: 1 };
 
 describe('FIELD_MAPPINGS', () => {
-  it('declares all four bidirectional mappings', () => {
+  it('declares all five bidirectional mappings', () => {
     expect(FIELD_MAPPINGS.map((m) => m.taskField).sort()).toEqual([
       'dueDay',
+      'dueWithTime',
       'isDone',
       'notes',
       'title',
@@ -48,5 +49,16 @@ describe('FIELD_MAPPINGS', () => {
     expect(m.toIssueValue('', ctx)).toBeNull();
     expect(m.toTaskValue('2026-08-21', ctx)).toBe('2026-08-21');
     expect(m.toTaskValue('', ctx)).toBeUndefined();
+  });
+
+  it('dueWithTime <-> dueWithTime (millis)', () => {
+    const m = mappingFor('dueWithTime');
+    const ms = Date.UTC(2026, 7, 21, 14, 0, 0);
+    expect(m.toIssueValue(ms, ctx)).toBe(ms);
+    expect(m.toIssueValue(undefined, ctx)).toBeNull();
+    expect(m.toIssueValue('not-a-number', ctx)).toBeNull();
+    expect(m.toTaskValue(ms, ctx)).toBe(ms);
+    expect(m.toTaskValue(null, ctx)).toBeUndefined();
+    expect(m.toTaskValue('not-a-number', ctx)).toBeUndefined();
   });
 });
