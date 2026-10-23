@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Microsoft To Do</title>
+  <style>
+    :root {
+      --bg: #f5f6f8;
+      --card: #ffffff;
+      --text: #1f2329;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #2563eb;
+      --accent-fg: #ffffff;
+      --danger: #dc2626;
+      --success: #16a34a;
+      --warn: #d97706;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16181d;
+        --card: #1f2228;
+        --text: #e6e8ec;
+        --muted: #9aa1ac;
+        --line: #2c3038;
+        --accent: #4f83f0;
+        --accent-fg: #ffffff;
+        --danger: #f87171;
+        --success: #4ade80;
+        --warn: #fbbf24;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+      -webkit-text-size-adjust: 100%;
+    }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 14px 16px 24px; }
+
+    header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    header h1 { font-size: 18px; margin: 0; flex: 1; }
+    .badge {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      font-size: 12px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+    }
+    .badge.ok { color: var(--success); border-color: currentColor; }
+    .badge.bad { color: var(--danger); border-color: currentColor; }
+    .iconbtn {
+      border: 1px solid var(--line); background: var(--card); color: var(--muted);
+      border-radius: 8px; width: 30px; height: 30px; line-height: 1; font-size: 16px;
+      cursor: pointer; padding: 0;
+    }
+    .iconbtn:hover { color: var(--accent); border-color: var(--accent); }
+    .iconbtn:disabled { opacity: .5; cursor: default; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .iconbtn.spin { animation: spin 1s linear infinite; color: var(--accent); border-color: var(--accent); }
+
+    .banner {
+      border: 1px solid var(--warn); color: var(--warn); background: transparent;
+      border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px;
+    }
+    .meta { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+    nav.tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+    nav.tabs button {
+      appearance: none; border: none; background: none; color: var(--muted);
+      padding: 8px 14px; font-size: 14px; cursor: pointer; border-bottom: 2px solid transparent;
+    }
+    nav.tabs button:hover { color: var(--text); }
+    nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+    section.tab { display: none; }
+    section.tab.active { display: block; }
+
+    .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .toolbar input[type="text"] {
+      flex: 1; min-width: 140px; border: 1px solid var(--line); background: var(--card);
+      color: var(--text); border-radius: 8px; padding: 7px 10px; font-size: 13px;
+    }
+    .count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+    .toolbar select {
+      border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: 8px; padding: 6px 8px; font-size: 13px; max-width: 220px;
+    }
+    .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+    .chip {
+      appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+    select.push-target {
+      border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: 8px; padding: 3px 6px; font-size: 12px; max-width: 160px;
+    }
+
+    button.btn {
+      appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--text);
+      border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; white-space: nowrap;
+    }
+    button.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+    button.btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+    button.btn.primary:hover:not(:disabled) { opacity: .9; }
+    button.btn.small { padding: 4px 10px; font-size: 12px; }
+    button.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+    .list { background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .row {
+      display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px;
+      border-top: 1px solid var(--line);
+    }
+    .row:first-child { border-top: 0; }
+    .row .ck { margin-top: 3px; flex: none; }
+    .row .body { flex: 1; min-width: 0; }
+    .row .title { font-weight: 500; overflow-wrap: anywhere; }
+    .row .sub { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+    .row .notes {
+      color: var(--muted); font-size: 12px; margin-top: 2px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .row .sid { color: var(--muted); font-size: 11px; margin-top: 2px; max-width: 100%;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .row .actions { flex: none; display: flex; gap: 6px; }
+
+    .listhead { cursor: pointer; user-select: none; }
+    .listhead:hover { background: rgba(127, 127, 127, 0.06); }
+    .chev { flex: none; width: 12px; text-align: center; color: var(--muted); transition: transform .15s; }
+    .listhead.open .chev { transform: rotate(90deg); }
+    button.btn.danger { color: var(--danger); border-color: var(--danger); }
+    button.btn.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+    .tag {
+      display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+      border: 1px solid var(--muted); margin-right: 4px; margin-top: 2px;
+    }
+    .pill {
+      display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px;
+      border: 1px solid var(--line); color: var(--muted); margin-right: 4px; margin-top: 2px;
+    }
+
+    .empty { color: var(--muted); font-size: 13px; padding: 14px 12px; }
+
+    .loghead { display: flex; align-items: center; margin: 14px 0 6px; }
+    .loghead h2 { font-size: 12px; margin: 0; flex: 1; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    .log {
+      background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+      padding: 8px 12px; max-height: 200px; overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+    }
+    .log .line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1px 0; }
+    .log .err { color: var(--danger); }
+    .log .ok { color: var(--success); }
+    .log .warn { color: var(--warn); }
+    .log .dim { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Microsoft To Do</h1>
+      <span id="connBadge" class="badge">…</span>
+      <button id="btnRefresh" class="iconbtn" title="刷新状态 / Refresh">↻</button>
+    </header>
+
+    <div id="banner" class="banner" style="display:none"></div>
+    <p id="meta" class="meta"></p>
+
+    <div class="chips" id="listFilter" style="margin:0 0 12px"></div>
+
+    <nav class="tabs">
+      <button data-tab="push" class="active">推送 · Push</button>
+      <button data-tab="linked">已链接 · Linked</button>
+      <button data-tab="dead">链接体检 · Link health</button>
+      <button data-tab="reconcile">对账 · Reconcile</button>
+      <button data-tab="lists">清理 · Cleanup</button>
+    </nav>
+
+    <section id="tab-push" class="tab active">
+      <div class="toolbar">
+        <input type="text" id="pushQuery" placeholder="搜索标题 / 项目 / 标签 / 备注…" />
+        <span class="count" id="pushCount"></span>
+        <button class="btn small" id="btnSelectAll">全选 / Select all</button>
+        <button class="btn primary small" id="btnPushSelected" disabled>推送选中 (0)</button>
+      </div>
+      <div class="list" id="pushList"></div>
+    </section>
+
+    <section id="tab-linked" class="tab">
+      <div class="toolbar">
+        <input type="text" id="linkedQuery" placeholder="搜索标题 / 项目 / 标签 / 备注…" />
+        <span class="count" id="linkedCount"></span>
+      </div>
+      <div class="list" id="linkedList"></div>
+    </section>
+
+    <section id="tab-dead" class="tab">
+      <div class="toolbar">
+        <button class="btn primary" id="btnScan">开始检测 / Scan</button>
+        <span class="count" id="scanHint">全量校验已链接任务：找出已删除的（失效）与被挪到别的列表的（列表不一致）。</span>
+      </div>
+      <div class="list" id="deadList"></div>
+    </section>
+
+    <section id="tab-reconcile" class="tab">
+      <div class="toolbar">
+        <button class="btn primary" id="btnReconcile">扫描并修复完成状态 / Reconcile</button>
+        <span class="count" id="reconcileHint">比对本地打勾状态与上次同步基线：远端已完成 → 本地打勾；本地已完成 → 推送 completed；两边一致时只回写基线。逐条显示结果与错误。</span>
+      </div>
+      <div class="list" id="reconcileList">
+        <div class="empty">尚未对账。</div>
+      </div>
+    </section>
+
+    <section id="tab-lists" class="tab">
+      <div class="toolbar">
+        <span class="count" id="listsHint">按列表管理 To Do 任务：解除已链接任务的链接，或删除未链接的远端任务。</span>
+        <button class="btn small" id="btnToggleLists">收起全部 / Collapse all</button>
+      </div>
+      <div id="listsList"></div>
+    </section>
+
+    <div class="loghead">
+      <h2>日志 · Log</h2>
+      <button class="btn small" id="btnClearLog">清空 / Clear</button>
+    </div>
+    <div id="log" class="log"><div class="line dim">就绪。</div></div>
+  </div>
+
+  <script>
+    (function () {
+      'use strict';
+      var logEl = document.getElementById('log');
+      var connBadge = document.getElementById('connBadge');
+      var bannerEl = document.getElementById('banner');
+      var metaEl = document.getElementById('meta');
+      var pushListEl = document.getElementById('pushList');
+      var linkedListEl = document.getElementById('linkedList');
+      var deadListEl = document.getElementById('deadList');
+      var listsListEl = document.getElementById('listsList');
+      var pushQueryEl = document.getElementById('pushQuery');
+      var linkedQueryEl = document.getElementById('linkedQuery');
+      var pushCountEl = document.getElementById('pushCount');
+      var linkedCountEl = document.getElementById('linkedCount');
+      var listFilterEl = document.getElementById('listFilter');
+      var btnPushSelected = document.getElementById('btnPushSelected');
+      var btnSelectAll = document.getElementById('btnSelectAll');
+      var btnScan = document.getElementById('btnScan');
+      var btnReconcile = document.getElementById('btnReconcile');
+      var reconcileListEl = document.getElementById('reconcileList');
+      var btnToggleLists = document.getElementById('btnToggleLists');
+      var btnRefresh = document.getElementById('btnRefresh');
+      var msgCounter = 0;
+
+      var state = null;      // 最近一次 status 快照
+      var selected = {};     // 已勾选待批量推送的任务 id → true
+      var pushing = false;
+      var listExpanded = {};    // 「列表」页每张卡片的显式展开/收起状态（listId → bool）
+      var listsExpandedAll = null; // null=按任务数自动，true=全展开，false=全收起
+      var lastScanResult = null;   // 最近一次「链接体检」结果（供操作后移除已处理项）
+      var confirmRecreate = {};    // taskId → true：等待二次确认的「重建到应属列表」
+      var acting = {};             // taskId → true：正在解除/重建中，禁用对应按钮
+      var filterListId = '';      // 全局列表筛选（chips）态：''=全部
+      var pushTargetChoice = {};  // 待推送任务 taskId → 目标列表 id（逐任务下拉）
+      var listActing = {};        // 列表页操作进行中（SP taskId 或 MS taskId → true）
+      var deleteConfirm = {};     // 列表页 MS taskId → true：等待二次确认「删除」
+
+      function log(msg, cls) {
+        var div = document.createElement('div');
+        div.className = 'line' + (cls ? ' ' + cls : '');
+        div.textContent = msg;
+        logEl.appendChild(div);
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+
+      function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+          return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+      }
+
+      function shortId(id) {
+        return String(id || '');
+      }
+
+      function rpc(message) {
+        return new Promise(function (resolve, reject) {
+          var messageId = 'ms-todo-rpc-' + (++msgCounter);
+          function onMsg(ev) {
+            if (ev.source !== window.parent) return;
+            var d = ev.data;
+            if (!d || d.messageId !== messageId) return;
+            if (d.type === 'PLUGIN_MESSAGE_RESPONSE') {
+              window.removeEventListener('message', onMsg);
+              resolve(d.result);
+            } else if (d.type === 'PLUGIN_MESSAGE_ERROR') {
+              window.removeEventListener('message', onMsg);
+              reject(new Error(d.error || 'RPC error'));
+            }
+          }
+          window.addEventListener('message', onMsg);
+          window.parent.postMessage({ type: 'PLUGIN_MESSAGE', message: message, messageId: messageId }, '*');
+        });
+      }
+
+      // ---- 渲染 ----
+
+      function tagChip(t) {
+        var s = document.createElement('span');
+        s.className = 'tag';
+        s.textContent = t.title;
+        if (t.color) {
+          s.style.color = t.color;
+          s.style.borderColor = t.color;
+          s.style.background = t.color + '1a'; // ~10% alpha 底，浅深两色都可读
+        }
+        return s;
+      }
+
+      function fmtTime(ms) {
+        var d = new Date(ms);
+        function p(n) { return (n < 10 ? '0' : '') + n; }
+        return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+          ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+      }
+
+      function dueText(t) {
+        if (!t.dueDay && typeof t.dueWithTime !== 'number') return null;
+        var s = document.createElement('span');
+        s.className = 'pill';
+        s.textContent = '到期 ' + (typeof t.dueWithTime === 'number' ? fmtTime(t.dueWithTime) : t.dueDay);
+        return s;
+      }
+
+      function doneText(t) {
+        if (!t.isDone) return null;
+        var s = document.createElement('span');
+        s.className = 'pill';
+        s.textContent = '已完成';
+        return s;
+      }
+
+      function projectText(t) {
+        if (!t.projectName) return null;
+        var s = document.createElement('span');
+        s.className = 'pill';
+        s.textContent = t.projectName;
+        return s;
+      }
+
+      function listText(t) {
+        if (!t.listName) return null;
+        var s = document.createElement('span');
+        s.className = 'pill';
+        s.textContent = '列表 ' + t.listName;
+        return s;
+      }
+
+      // appendChild 不接受 null —— projectText/doneText/dueText 在字段缺失时返回 null，
+      // 直接 appendChild 会抛 "parameter 1 is not of type 'Node'"（桌面/移动引擎文案略异）。
+      function appendOrSkip(parent, node) {
+        if (node) parent.appendChild(node);
+      }
+
+      function matches(t, q) {
+        if (!q) return true;
+        q = q.toLowerCase();
+        var hay = [t.title, t.notes, t.projectName, (t.tags || []).map(function (x) { return x.title; }).join(' ')]
+          .filter(Boolean).join(' ').toLowerCase();
+        return hay.indexOf(q) !== -1;
+      }
+
+      function renderBanner() {
+        var msgs = [];
+        if (state && !state.connected) {
+          msgs.push('未连接 Microsoft 账户。请在 SP「设置 → 集成 → Microsoft To Do」打开该 provider 的配置并点「测试连接」完成登录，然后回到本页刷新。');
+        } else if (state && state.connected && !state.listId) {
+          msgs.push('已连接，但尚未选择 To Do 列表。请到 provider 配置的「To Do 列表」下拉里选择一个列表。');
+        }
+        if (msgs.length) {
+          bannerEl.textContent = msgs.join(' ');
+          bannerEl.style.display = '';
+        } else {
+          bannerEl.style.display = 'none';
+        }
+      }
+
+      function listNameOf(id) {
+        if (!id || !state) return '';
+        var lists = state.lists || [];
+        for (var i = 0; i < lists.length; i++) {
+          if (lists[i].id === id) return lists[i].displayName;
+        }
+        return id === state.listId ? (state.listName || id) : id;
+      }
+
+      function matchesList(t, listId) {
+        if (!listId) return true;
+        return t.listId === listId;
+      }
+
+      function renderMeta() {
+        if (!state) return;
+        var selId = filterListId;
+        var list = selId ? (listNameOf(selId) || selId) : (state.listName || '未选择列表');
+        if (!selId && state.listName) list = state.listName;
+        var proj = state.projectName || '全部任务';
+        var n = state.totalTasks != null ? state.totalTasks : ((state.pushable || []).length + (state.linked || []).length);
+        var scope = selId ? '（已按列表过滤）' : '';
+        metaEl.textContent = '列表：' + list + ' · 范围：' + proj + scope + ' · 共 ' + n + ' 个任务' + (state.version ? ' · 插件 v' + state.version : '');
+      }
+
+      function filteredPush() {
+        var q = pushQueryEl.value.trim();
+        var listId = filterListId;
+        return (state.pushable || []).filter(function (t) { return matches(t, q) && matchesList(t, listId); });
+      }
+      function filteredLinked() {
+        var q = linkedQueryEl.value.trim();
+        var listId = filterListId;
+        return (state.linked || []).filter(function (t) { return matches(t, q) && matchesList(t, listId); });
+      }
+
+      // 每个待推送任务的目标列表下拉：默认「自动」= 按任务所属项目绑定列表解析；选定则覆盖。
+      function makeTargetSelect(taskId) {
+        var sel = document.createElement('select');
+        sel.className = 'push-target';
+        sel.title = '该任务的推送目标列表；默认「自动」= 按任务所属项目绑定的列表';
+        sel.disabled = pushing;
+        var auto = document.createElement('option');
+        auto.value = '';
+        auto.textContent = '自动 · Auto';
+        sel.appendChild(auto);
+        (state.lists || []).forEach(function (l) {
+          if (!l.id) return;
+          var o = document.createElement('option');
+          o.value = l.id;
+          o.textContent = l.displayName;
+          sel.appendChild(o);
+        });
+        sel.value = pushTargetChoice[taskId] || '';
+        sel.addEventListener('change', function () {
+          pushTargetChoice[taskId] = sel.value || '';
+        });
+        return sel;
+      }
+
+      function renderPush() {
+        var items = filteredPush();
+        pushCountEl.textContent = items.length + ' 个未同步任务';
+        // 清掉已不在过滤结果里的勾选
+        var ids = {};
+        items.forEach(function (t) { if (selected[t.id]) ids[t.id] = true; });
+        selected = ids;
+        btnPushSelected.textContent = '推送选中 (' + Object.keys(selected).length + ')';
+        btnPushSelected.disabled = pushing || Object.keys(selected).length === 0;
+
+        if (!items.length) {
+          var hint = filterListId
+            ? '该列表下没有待推送的任务（未同步任务按各自项目绑定的列表归类）。'
+            : '没有未同步的任务。自动创建失败、无 MS 链接的本地任务会出现在这里。';
+          pushListEl.innerHTML = '<div class="empty">' + esc(hint) + '</div>';
+          return;
+        }
+        pushListEl.innerHTML = '';
+        items.forEach(function (t) {
+          var row = document.createElement('div');
+          row.className = 'row';
+
+          var ck = document.createElement('input');
+          ck.type = 'checkbox';
+          ck.className = 'ck';
+          ck.checked = !!selected[t.id];
+          ck.addEventListener('change', function () {
+            if (ck.checked) selected[t.id] = true; else delete selected[t.id];
+            renderPush();
+          });
+
+          var body = document.createElement('div');
+          body.className = 'body';
+          var title = document.createElement('div');
+          title.className = 'title';
+          title.textContent = t.title;
+          body.appendChild(title);
+
+          var sub = document.createElement('div');
+          sub.className = 'sub';
+          appendOrSkip(sub, projectText(t));
+          appendOrSkip(sub, listText(t));
+          (t.tags || []).forEach(function (tg) { sub.appendChild(tagChip(tg)); });
+          appendOrSkip(sub, doneText(t));
+          appendOrSkip(sub, dueText(t));
+          if (sub.childNodes.length) body.appendChild(sub);
+
+          if (t.notes) {
+            var notes = document.createElement('div');
+            notes.className = 'notes';
+            notes.textContent = t.notes;
+            notes.title = t.notes;
+            body.appendChild(notes);
+          }
+
+          var actions = document.createElement('div');
+          actions.className = 'actions';
+          actions.appendChild(makeTargetSelect(t.id));
+          var btn = document.createElement('button');
+          btn.className = 'btn primary small';
+          btn.textContent = '推送';
+          btn.disabled = pushing;
+          btn.addEventListener('click', function () { pushOne(t.id); });
+          actions.appendChild(btn);
+
+          row.appendChild(ck);
+          row.appendChild(body);
+          row.appendChild(actions);
+          pushListEl.appendChild(row);
+        });
+      }
+
+      function renderLinked() {
+        var items = filteredLinked();
+        linkedCountEl.textContent = items.length + ' 个已链接任务';
+        if (!items.length) {
+          var lHint = filterListId ? '该列表下没有已链接任务。' : '没有已链接任务。';
+          linkedListEl.innerHTML = '<div class="empty">' + esc(lHint) + '</div>';
+          return;
+        }
+        linkedListEl.innerHTML = '';
+        items.forEach(function (t) {
+          var row = document.createElement('div');
+          row.className = 'row';
+
+          var body = document.createElement('div');
+          body.className = 'body';
+          var title = document.createElement('div');
+          title.className = 'title';
+          title.textContent = t.title;
+          body.appendChild(title);
+
+          var sub = document.createElement('div');
+          sub.className = 'sub';
+          appendOrSkip(sub, projectText(t));
+          appendOrSkip(sub, listText(t));
+          (t.tags || []).forEach(function (tg) { sub.appendChild(tagChip(tg)); });
+          appendOrSkip(sub, doneText(t));
+          appendOrSkip(sub, dueText(t));
+          if (sub.childNodes.length) body.appendChild(sub);
+
+          var sid = document.createElement('div');
+          sid.className = 'sid';
+          sid.textContent = 'MS id: ' + shortId(t.issueId);
+          sid.title = 'MS id: ' + shortId(t.issueId);
+          body.appendChild(sid);
+
+          row.appendChild(body);
+          linkedListEl.appendChild(row);
+        });
+      }
+
+      function deadRow(d) {
+        var row = document.createElement('div');
+        row.className = 'row';
+        var body = document.createElement('div');
+        body.className = 'body';
+        var title = document.createElement('div');
+        title.className = 'title';
+        title.textContent = d.title;
+        body.appendChild(title);
+        var sid = document.createElement('div');
+        sid.className = 'sid';
+        sid.textContent = 'MS id: ' + shortId(d.issueId);
+        sid.title = 'MS id: ' + shortId(d.issueId);
+        body.appendChild(sid);
+        row.appendChild(body);
+
+        var actions = document.createElement('div');
+        actions.className = 'actions';
+        var btn = document.createElement('button');
+        btn.className = 'btn small';
+        btn.textContent = '解除链接';
+        btn.title = '清除该任务的 MS 链接，使其恢复为本地未同步任务（停止反复 404）';
+        btn.disabled = !!acting[d.taskId];
+        btn.addEventListener('click', function () { unlinkOne(d.taskId); });
+        actions.appendChild(btn);
+        row.appendChild(actions);
+        return row;
+      }
+
+      function mismatchRow(m) {
+        var row = document.createElement('div');
+        row.className = 'row';
+        var body = document.createElement('div');
+        body.className = 'body';
+        var title = document.createElement('div');
+        title.className = 'title';
+        title.textContent = m.title;
+        body.appendChild(title);
+        var sub = document.createElement('div');
+        sub.className = 'sub';
+        sub.textContent = '实际列表：' + m.listName + ' → 应属列表：' + m.expectedListName;
+        body.appendChild(sub);
+        var sid = document.createElement('div');
+        sid.className = 'sid';
+        sid.textContent = 'MS id: ' + shortId(m.issueId);
+        sid.title = 'MS id: ' + shortId(m.issueId);
+        body.appendChild(sid);
+        row.appendChild(body);
+
+        var actions = document.createElement('div');
+        actions.className = 'actions';
+        var unlink = document.createElement('button');
+        unlink.className = 'btn small';
+        unlink.textContent = '解除链接';
+        unlink.title = '清除 MS 链接，恢复为本地未同步任务（保守，不删除远端数据）';
+        unlink.disabled = !!acting[m.taskId];
+        unlink.addEventListener('click', function () { unlinkOne(m.taskId); });
+        actions.appendChild(unlink);
+
+        var rec = document.createElement('button');
+        rec.className = 'btn small danger';
+        rec.textContent = confirmRecreate[m.taskId] ? '确认重建？' : '重建到应属列表';
+        rec.title = '在应属列表新建同内容任务并重新链接，然后删除旧列表中的原任务（会改变 MS 任务 id）';
+        rec.disabled = !!acting[m.taskId];
+        rec.addEventListener('click', function () { recreateOne(m.taskId); });
+        actions.appendChild(rec);
+
+        row.appendChild(actions);
+        return row;
+      }
+
+      function renderDead(result) {
+        if (result) lastScanResult = result;
+        if (!result) {
+          deadListEl.innerHTML = '<div class="empty">尚未检测。</div>';
+          return;
+        }
+        if (result.empty) {
+          deadListEl.innerHTML = '<div class="empty">没有已链接任务可检测。</div>';
+          return;
+        }
+        var dead = result.dead || [];
+        var mismatched = result.mismatched || [];
+        if (!dead.length && !mismatched.length) {
+          var msg = '已检查 ' + result.checked + ' 个链接，未发现失效或列表不一致。';
+          deadListEl.innerHTML = '<div class="empty">' + esc(msg) + '</div>';
+          return;
+        }
+        deadListEl.innerHTML = '';
+        if (dead.length) {
+          var p = document.createElement('div');
+          p.className = 'empty';
+          p.textContent = '发现 ' + dead.length + ' 个失效链接（在 To Do 里已不存在）。用「解除链接」让其恢复为本地任务、停止反复报错；如想彻底删除，请在 SP 主界面手动删：';
+          deadListEl.appendChild(p);
+          dead.forEach(function (d) { deadListEl.appendChild(deadRow(d)); });
+        }
+        if (mismatched.length) {
+          var p2 = document.createElement('div');
+          p2.className = 'empty';
+          p2.textContent = '发现 ' + mismatched.length + ' 个「列表不一致」链接（任务被挪到了别的列表）。已自动定位真实列表继续读写、不再 404；「重建到应属列表」可彻底恢复双向轮询同步（会改 MS id），「解除链接」则保守地退回本地任务：';
+          deadListEl.appendChild(p2);
+          mismatched.forEach(function (m) { deadListEl.appendChild(mismatchRow(m)); });
+        }
+      }
+
+      function renderListFilter() {
+        if (!state) return;
+        listFilterEl.innerHTML = '';
+        var lists = state.lists || [];
+        var seen = {};
+        var chips = [];
+        // 「全部」chip：不按列表过滤。
+        chips.push({ id: '', label: '全部 · All' });
+        lists.forEach(function (l) {
+          if (!l.id || seen[l.id]) return;
+          seen[l.id] = true;
+          chips.push({ id: l.id, label: l.displayName + (l.id === state.listId ? ' · 当前' : '') });
+        });
+        // 总览拉取失败时 lists 为空，但当前列表仍要能显式筛。
+        if (state.listId && !seen[state.listId]) {
+          chips.push({ id: state.listId, label: (state.listName || state.listId) + ' · 当前' });
+        }
+        // 若当前筛选的列表已不存在则退回「全部」。
+        var stillThere = false;
+        chips.forEach(function (c) { if (c.id === filterListId) stillThere = true; });
+        if (!stillThere) filterListId = '';
+        chips.forEach(function (c) {
+          var b = document.createElement('button');
+          b.className = 'chip' + (c.id === filterListId ? ' active' : '');
+          b.textContent = c.label;
+          b.addEventListener('click', function () {
+            filterListId = c.id;
+            renderMeta();
+            renderPush();
+            renderLinked();
+            renderLists();
+            renderListFilter();
+            log('已筛选列表：' + (c.id ? (listNameOf(c.id) || c.id) : '全部') + '。', 'dim');
+          });
+          listFilterEl.appendChild(b);
+        });
+      }
+
+      function listShouldExpand(l) {
+        if (Object.prototype.hasOwnProperty.call(listExpanded, l.id)) return listExpanded[l.id];
+        if (listsExpandedAll !== null) return listsExpandedAll;
+        // 默认全部展开（和旧版一致，进「列表」页即自动展示任务）；空间问题交给
+        // 「收起全部」按钮或点列表头逐张收起。
+        return true;
+      }
+
+      function renderLists() {
+        if (!state || !state.connected) {
+          listsListEl.innerHTML = '<div class="empty">连接后显示全部 To Do 列表及其任务。</div>';
+          return;
+        }
+        var lists = state.lists || [];
+        if (filterListId) {
+          lists = lists.filter(function (l) { return l.id === filterListId; });
+        }
+        if (!lists.length) {
+          listsListEl.innerHTML = '<div class="empty">' + (filterListId ? '没有匹配的列表。' : '没有读取到列表（可能是全列表拉取失败）。') + '</div>';
+          return;
+        }
+        listsListEl.innerHTML = '';
+        lists.forEach(function (l) {
+          var card = document.createElement('div');
+          card.className = 'list';
+          card.style.marginBottom = '12px';
+
+          var expanded = listShouldExpand(l);
+          var head = document.createElement('div');
+          head.className = 'row listhead' + (expanded ? ' open' : '');
+          var chev = document.createElement('span');
+          chev.className = 'chev';
+          chev.textContent = '▶';
+          head.appendChild(chev);
+          var hbody = document.createElement('div');
+          hbody.className = 'body';
+          var htitle = document.createElement('div');
+          htitle.className = 'title';
+          htitle.textContent = l.displayName + (l.id === state.listId ? ' · 当前' : '');
+          hbody.appendChild(htitle);
+          var hsub = document.createElement('div');
+          hsub.className = 'sub';
+          hsub.textContent = '共 ' + l.taskCount + ' 个任务 · 已链接 ' + l.linkedCount + ' 个';
+          hbody.appendChild(hsub);
+          head.appendChild(hbody);
+          var toggle = document.createElement('span');
+          toggle.className = 'count';
+          toggle.textContent = expanded ? '收起' : '展开';
+          head.appendChild(toggle);
+          card.appendChild(head);
+          head.addEventListener('click', function () {
+            listExpanded[l.id] = !listShouldExpand(l);
+            renderLists();
+          });
+
+          if (!expanded) {
+            listsListEl.appendChild(card);
+            return;
+          }
+
+          if (!l.tasks || !l.tasks.length) {
+            var empty = document.createElement('div');
+            empty.className = 'empty';
+            empty.textContent = '（空列表）';
+            card.appendChild(empty);
+          } else {
+            l.tasks.forEach(function (t) {
+              var row = document.createElement('div');
+              row.className = 'row';
+              var body = document.createElement('div');
+              body.className = 'body';
+              var title = document.createElement('div');
+              title.className = 'title';
+              title.textContent = t.title;
+              body.appendChild(title);
+
+              var sub = document.createElement('div');
+              sub.className = 'sub';
+              var st = document.createElement('span');
+              st.className = 'pill';
+              st.textContent = t.status === 'completed' ? '已完成' : '未开始';
+              sub.appendChild(st);
+              if (t.linkedTaskId) {
+                var lp = document.createElement('span');
+                lp.className = 'pill';
+                lp.style.color = 'var(--success)';
+                lp.style.borderColor = 'currentColor';
+                lp.textContent = '已链接' + (t.linkedProjectName ? ' · ' + t.linkedProjectName : '');
+                sub.appendChild(lp);
+              } else {
+                var up = document.createElement('span');
+                up.className = 'pill';
+                up.textContent = '未链接';
+                sub.appendChild(up);
+              }
+              body.appendChild(sub);
+
+              var actions = document.createElement('div');
+              actions.className = 'actions';
+              if (t.linkedTaskId) {
+                var ub = document.createElement('button');
+                ub.className = 'btn small';
+                ub.textContent = '解除链接';
+                ub.title = '清除该任务的 MS 链接，使其恢复为本地未同步任务';
+                ub.disabled = !!listActing[t.linkedTaskId];
+                ub.addEventListener('click', function () { listUnlink(t.linkedTaskId); });
+                actions.appendChild(ub);
+              } else {
+                var db = document.createElement('button');
+                db.className = 'btn small danger';
+                db.textContent = deleteConfirm[t.id] ? '确认删除？' : '删除';
+                db.title = '删除 To Do 中的该任务（不可恢复，需二次确认）';
+                db.disabled = !!listActing[t.id];
+                db.addEventListener('click', function () { listDelete(l.id, t.id, t.title); });
+                actions.appendChild(db);
+              }
+
+              row.appendChild(body);
+              row.appendChild(actions);
+              card.appendChild(row);
+            });
+          }
+          listsListEl.appendChild(card);
+        });
+      }
+
+      // ---- 操作 ----
+
+      function loadStatus() {
+        log('拉取任务状态…', 'dim');
+        btnRefresh.disabled = true;
+        btnRefresh.classList.add('spin');
+        if (!state) {
+          listFilterEl.innerHTML = '<span class="count">正在加载列表… Loading lists…</span>';
+          metaEl.textContent = '正在加载… Loading…';
+        }
+        return rpc({ op: 'status' }).then(function (s) {
+          if (s && s.ok) {
+            state = s;
+            if (s.connected) {
+              connBadge.textContent = '已连接 · Connected';
+              connBadge.className = 'badge ok';
+            } else {
+              connBadge.textContent = '未连接 · Not connected';
+              connBadge.className = 'badge bad';
+            }
+            renderBanner();
+            renderListFilter();
+            renderMeta();
+            renderPush();
+            renderLinked();
+            renderLists();
+            log('状态已更新（插件 v' + (s.version || '?') + '）：可推送 ' + (s.pushable ? s.pushable.length : 0) + ' 个，已链接 ' + (s.linked ? s.linked.length : 0) + ' 个。');
+          } else {
+            log('状态读取失败：' + (s && s.error ? s.error : '未知错误'), 'err');
+            if (!state) {
+              listFilterEl.innerHTML = '<span class="count">加载失败 · Load failed</span>';
+              metaEl.textContent = '加载失败 · Load failed';
+            }
+          }
+        }).catch(function (e) {
+          log('状态读取异常：' + e.message, 'err');
+          if (!state) {
+            listFilterEl.innerHTML = '<span class="count">加载失败 · Load failed</span>';
+            metaEl.textContent = '加载失败 · Load failed';
+          }
+        }).then(function () {
+          btnRefresh.disabled = false;
+          btnRefresh.classList.remove('spin');
+        });
+      }
+
+      function pushOne(id) {
+        if (pushing) return;
+        pushing = true;
+        renderPush();
+        log('推送任务 ' + id + ' …', 'dim');
+        var msg = { op: 'forceSync', taskIds: [id] };
+        if (pushTargetChoice[id]) {
+          msg.targets = {};
+          msg.targets[id] = pushTargetChoice[id];
+        }
+        rpc(msg).then(function (r) {
+          reportPushResult(r);
+        }).catch(function (e) {
+          log('推送异常：' + e.message, 'err');
+        }).then(function () {
+          pushing = false;
+          return loadStatus();
+        });
+      }
+
+      function pushSelected() {
+        var ids = Object.keys(selected);
+        if (pushing || !ids.length) return;
+        pushing = true;
+        renderPush();
+        log('批量推送 ' + ids.length + ' 个任务…', 'dim');
+        var msg = { op: 'forceSync', taskIds: ids };
+        var targets = {};
+        ids.forEach(function (id) { if (pushTargetChoice[id]) targets[id] = pushTargetChoice[id]; });
+        if (Object.keys(targets).length) msg.targets = targets;
+        rpc(msg).then(function (r) {
+          reportPushResult(r);
+        }).catch(function (e) {
+          log('推送异常：' + e.message, 'err');
+        }).then(function () {
+          pushing = false;
+          selected = {};
+          return loadStatus();
+        });
+      }
+
+      function reportPushResult(r) {
+        if (!r) { log('推送失败：无返回。', 'err'); return; }
+        var results = r.results || [];
+        results.forEach(function (res) {
+          if (res.ok) {
+            log('✓ ' + (res.title || res.id) + (res.warning ? ' · ' + res.warning : ''), res.warning ? 'warn' : 'ok');
+          } else {
+            log('✗ ' + (res.title || res.id) + ' · ' + (res.error || '失败'), 'err');
+          }
+        });
+        log('推送完成：成功 ' + (r.pushed || 0) + '，失败 ' + (r.failed || 0) + '。', (r.failed ? 'warn' : 'ok'));
+      }
+
+      function removeFromLastScan(taskId) {
+        if (!lastScanResult) return;
+        if (lastScanResult.dead) {
+          lastScanResult.dead = lastScanResult.dead.filter(function (d) { return d.taskId !== taskId; });
+        }
+        if (lastScanResult.mismatched) {
+          lastScanResult.mismatched = lastScanResult.mismatched.filter(function (m) { return m.taskId !== taskId; });
+        }
+        renderDead(lastScanResult);
+      }
+
+      function unlinkOne(taskId) {
+        if (acting[taskId]) return;
+        acting[taskId] = true;
+        renderDead(lastScanResult);
+        log('解除链接 ' + taskId + ' …', 'dim');
+        rpc({ op: 'unlink', taskId: taskId }).then(function (r) {
+          if (r && r.ok) {
+            log('✓ 已解除链接：' + (r.title || taskId) + '（恢复为本地未同步任务，可在「推送」里重新推送）。', 'ok');
+            removeFromLastScan(taskId);
+            return loadStatus();
+          }
+          log('✗ 解除链接失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+        }).catch(function (e) {
+          log('解除链接异常：' + e.message, 'err');
+        }).then(function () {
+          acting[taskId] = false;
+          renderDead(lastScanResult);
+        });
+      }
+
+      function recreateOne(taskId) {
+        if (acting[taskId]) return;
+        if (!confirmRecreate[taskId]) {
+          confirmRecreate[taskId] = true;
+          renderDead(lastScanResult);
+          log('再次点击「确认重建？」以执行：将在应属列表重建任务、重新链接，并删除旧列表中的原任务。', 'warn');
+          return;
+        }
+        confirmRecreate[taskId] = false;
+        acting[taskId] = true;
+        renderDead(lastScanResult);
+        log('重建链接 ' + taskId + ' …', 'dim');
+        rpc({ op: 'recreateLink', taskId: taskId }).then(function (r) {
+          if (r && r.ok) {
+            log('✓ 已重建：' + (r.title || taskId) + (r.warning ? ' · ' + r.warning : ''), r.warning ? 'warn' : 'ok');
+            removeFromLastScan(taskId);
+            return loadStatus();
+          }
+          log('✗ 重建失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+        }).catch(function (e) {
+          log('重建异常：' + e.message, 'err');
+        }).then(function () {
+          acting[taskId] = false;
+          renderDead(lastScanResult);
+        });
+      }
+
+      function toggleAllLists() {
+        listExpanded = {};
+        // 按钮文案 = 点击后要执行的动作。非「全收起」时点一下 = 收起全部；「全收起」时 = 展开全部。
+        if (listsExpandedAll === false) {
+          listsExpandedAll = true;
+        } else {
+          listsExpandedAll = false;
+        }
+        renderLists();
+        btnToggleLists.textContent = listsExpandedAll === false ? '展开全部 / Expand all' : '收起全部 / Collapse all';
+      }
+
+      function listUnlink(spTaskId) {
+        if (listActing[spTaskId]) return;
+        listActing[spTaskId] = true;
+        renderLists();
+        log('解除链接 ' + spTaskId + ' …', 'dim');
+        rpc({ op: 'unlink', taskId: spTaskId }).then(function (r) {
+          if (r && r.ok) {
+            log('✓ 已解除链接：' + (r.title || spTaskId) + '（恢复为本地未同步任务）。', 'ok');
+            return loadStatus();
+          }
+          log('✗ 解除链接失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+        }).catch(function (e) {
+          log('解除链接异常：' + e.message, 'err');
+        }).then(function () {
+          listActing[spTaskId] = false;
+          renderLists();
+        });
+      }
+
+      function listDelete(listId, msTaskId, title) {
+        if (listActing[msTaskId]) return;
+        if (!deleteConfirm[msTaskId]) {
+          deleteConfirm[msTaskId] = true;
+          renderLists();
+          log('再次点击「确认删除？」以删除该 To Do 任务：' + title + '。', 'warn');
+          return;
+        }
+        deleteConfirm[msTaskId] = false;
+        listActing[msTaskId] = true;
+        renderLists();
+        log('删除远端任务 ' + title + ' …', 'dim');
+        rpc({ op: 'deleteMsTask', listId: listId, taskId: msTaskId }).then(function (r) {
+          if (r && r.ok) {
+            log('✓ 已删除远端任务：' + title, 'ok');
+            return loadStatus();
+          }
+          log('✗ 删除失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+        }).catch(function (e) {
+          log('删除异常：' + e.message, 'err');
+        }).then(function () {
+          listActing[msTaskId] = false;
+          renderLists();
+        });
+      }
+
+      function scan() {
+        btnScan.disabled = true;
+        deadListEl.innerHTML = '<div class="empty">检测中…</div>';
+        log('开始链接体检…', 'dim');
+        rpc({ op: 'scanDeadLinks' }).then(function (r) {
+          if (!r || !r.ok) {
+            deadListEl.innerHTML = '<div class="empty">检测失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
+            log('检测失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+            return;
+          }
+          renderDead(r);
+          var dead = (r.dead || []);
+          var mismatched = (r.mismatched || []);
+          if (dead.length || mismatched.length) {
+            if (dead.length) {
+              log('发现 ' + dead.length + ' 个失效链接：', 'warn');
+              dead.forEach(function (d) { log('  · ' + d.title, 'err'); });
+            }
+            if (mismatched.length) {
+              log('发现 ' + mismatched.length + ' 个列表不一致：', 'warn');
+              mismatched.forEach(function (m) { log('  · ' + m.title + '（' + m.listName + ' → ' + m.expectedListName + '）', 'warn'); });
+            }
+          } else {
+            log('已检查 ' + r.checked + ' 个链接，未发现失效或列表不一致。', 'ok');
+          }
+        }).catch(function (e) {
+          deadListEl.innerHTML = '<div class="empty">检测异常：' + esc(e.message) + '</div>';
+          log('检测异常：' + e.message, 'err');
+        }).then(function () {
+          btnScan.disabled = false;
+        });
+      }
+
+      function renderReconcile(r) {
+        if (!r || !r.ok) {
+          reconcileListEl.innerHTML = '<div class="empty">对账失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
+          return;
+        }
+        var results = r.results || [];
+        if (!results.length) {
+          reconcileListEl.innerHTML = '<div class="empty">检查了 ' + r.checked + ' 个任务，未发现完成状态分叉。</div>';
+          return;
+        }
+        reconcileListEl.innerHTML = '';
+        results.forEach(function (x) {
+          var row = document.createElement('div');
+          row.className = 'row';
+          var body = document.createElement('div');
+          body.className = 'body';
+          var title = document.createElement('div');
+          title.className = 'title';
+          title.textContent = x.title || shortId(x.taskId);
+          var sub = document.createElement('div');
+          sub.className = 'sub';
+          var label = x.ok
+            ? (x.action === 'push' ? '已推送完成到 MS'
+              : x.action === 'pull' ? '已在本地打勾'
+              : x.action === 'baseline-only' ? '远端已完成，仅回写基线'
+              : x.action === 'none' ? '无需处理'
+              : x.action)
+            : '失败';
+          sub.textContent = label + (x.reason ? ' · ' + x.reason : '') + (x.error ? ' · ' + x.error : '');
+          if (!x.ok) sub.style.color = 'var(--danger)';
+          body.appendChild(title);
+          body.appendChild(sub);
+          row.appendChild(body);
+          reconcileListEl.appendChild(row);
+        });
+      }
+
+      function reconcile() {
+        btnReconcile.disabled = true;
+        reconcileListEl.innerHTML = '<div class="empty">对账中…</div>';
+        log('开始完成状态对账…', 'dim');
+        rpc({ op: 'reconcile' }).then(function (r) {
+          if (!r || !r.ok) {
+            reconcileListEl.innerHTML = '<div class="empty">对账失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
+            log('对账失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+            return;
+          }
+          renderReconcile(r);
+          var results = r.results || [];
+          var pushed = results.filter(function (x) { return x.ok && x.action === 'push'; }).length;
+          var pulled = results.filter(function (x) { return x.ok && x.action === 'pull'; }).length;
+          var failed = results.filter(function (x) { return !x.ok; }).length;
+          log('对账完成：分叉 ' + (r.diverged || 0) + ' 个，推送 ' + pushed + '，拉取 ' + pulled + '，失败 ' + failed + '。', failed ? 'warn' : 'ok');
+          results.filter(function (x) { return !x.ok; }).forEach(function (x) {
+            log('  · ' + (x.title || x.taskId) + '：' + (x.error || '未知错误'), 'err');
+          });
+          if (typeof loadStatus === 'function') loadStatus();
+        }).catch(function (e) {
+          reconcileListEl.innerHTML = '<div class="empty">对账异常：' + esc(e.message) + '</div>';
+          log('对账异常：' + e.message, 'err');
+        }).then(function () {
+          btnReconcile.disabled = false;
+        });
+      }
+
+      function switchTab(name) {
+        var tabs = document.querySelectorAll('nav.tabs button');
+        for (var i = 0; i < tabs.length; i++) {
+          tabs[i].classList.toggle('active', tabs[i].getAttribute('data-tab') === name);
+        }
+        var sections = document.querySelectorAll('section.tab');
+        for (var j = 0; j < sections.length; j++) {
+          sections[j].classList.toggle('active', sections[j].id === 'tab-' + name);
+        }
+      }
+
+      // ---- 事件 ----
+
+      btnRefresh.addEventListener('click', loadStatus);
+      btnPushSelected.addEventListener('click', pushSelected);
+      btnScan.addEventListener('click', scan);
+      btnReconcile.addEventListener('click', reconcile);
+      btnToggleLists.addEventListener('click', toggleAllLists);
+      document.getElementById('btnClearLog').addEventListener('click', function () {
+        logEl.innerHTML = '';
+      });
+      btnSelectAll.addEventListener('click', function () {
+        var items = filteredPush();
+        var allSelected = items.length > 0 && items.every(function (t) { return selected[t.id]; });
+        items.forEach(function (t) {
+          if (allSelected) delete selected[t.id]; else selected[t.id] = true;
+        });
+        renderPush();
+      });
+      pushQueryEl.addEventListener('input', renderPush);
+      linkedQueryEl.addEventListener('input', renderLinked);
+      document.querySelectorAll('nav.tabs button').forEach(function (b) {
+        b.addEventListener('click', function () { switchTab(b.getAttribute('data-tab')); });
+      });
+
+      loadStatus();
+    })();
+  </script>
+</body>
+</html>

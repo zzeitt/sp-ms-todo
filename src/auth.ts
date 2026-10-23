@@ -239,11 +239,38 @@ export async function runDeviceCodeLogin(
 
 // --- 默认依赖（接宿主 PluginAPI）---
 
+/**
+ * 宿主的密钥 / 任务 / 配置存储底层都是 IndexedDB。移动端在 WebView 后台化、销毁或
+ * `versionchange` 期间，这个连接会短暂处于「正在关闭」状态，此时任何事务都会抛
+ * `Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.`。
+ * 这类错误是瞬态的（连接通常数百毫秒内恢复），对幂等的读 / 覆盖写做有限次重试；确实
+ * 不可用时把最后一个错误原样抛回，交给调用方 catch 优雅降级（视图显示「加载失败」，
+ * 宿主轮询返回空），而不是让宿主弹错误提示。
+ */
+export async function withHostDbRetry<T>(
+  op: () => Promise<T>,
+  retries = 2,
+  delayMs = 250,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await op();
+    } catch (e) {
+      lastErr = e;
+      if (attempt < retries) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export function createSecretStore(): SecretStore {
   return {
-    get: (key) => PluginAPI.getSecret(key),
-    set: (key, value) => PluginAPI.setSecret(key, value),
-    delete: (key) => PluginAPI.deleteSecret(key),
+    get: (key) => withHostDbRetry(() => PluginAPI.getSecret(key)),
+    set: (key, value) => withHostDbRetry(() => PluginAPI.setSecret(key, value)),
+    delete: (key) => withHostDbRetry(() => PluginAPI.deleteSecret(key)),
   };
 }
 

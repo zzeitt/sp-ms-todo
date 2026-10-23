@@ -7,6 +7,7 @@ import {
   storeTokens,
   getAccessToken,
   runDeviceCodeLogin,
+  withHostDbRetry,
   SECRET_ACCESS_TOKEN,
   SECRET_ACCESS_EXPIRY,
   SECRET_REFRESH_TOKEN,
@@ -238,5 +239,37 @@ describe('runDeviceCodeLogin', () => {
 
     await expect(runDeviceCodeLogin('cid', http, dialog, secrets)).rejects.toThrow();
     expect(secrets.data.get(SECRET_REFRESH_TOKEN)).toBeUndefined();
+  });
+});
+
+describe('withHostDbRetry', () => {
+  const closingError = new Error(
+    "Failed to execute 'transaction' on 'IDBDatabase': The database connection is closing.",
+  );
+
+  it('returns the value on first success without retrying', async () => {
+    const op = vi.fn(async () => 'ok');
+
+    await expect(withHostDbRetry(op, 2, 0)).resolves.toBe('ok');
+    expect(op).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a transient failure then succeeds', async () => {
+    const op = vi
+      .fn<() => Promise<string>>()
+      .mockRejectedValueOnce(closingError)
+      .mockResolvedValueOnce('ok');
+
+    await expect(withHostDbRetry(op, 2, 0)).resolves.toBe('ok');
+    expect(op).toHaveBeenCalledTimes(2);
+  });
+
+  it('rethrows the last error after exhausting retries', async () => {
+    const op = vi.fn(async () => {
+      throw closingError;
+    });
+
+    await expect(withHostDbRetry(op, 2, 0)).rejects.toBe(closingError);
+    expect(op).toHaveBeenCalledTimes(3);
   });
 });
