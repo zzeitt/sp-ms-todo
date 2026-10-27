@@ -31,7 +31,8 @@ import {
   TODO_WEB_URL,
 } from './domain';
 import type { TodoTask } from './domain';
-import { graphRequest, graphRequestAll, graphRequestPagesUntil } from './graph';
+import { graphRequest, graphRequestAll } from './graph';
+import { TodoTaskCache } from './list-cache';
 import {
   buildCreateTaskBody,
   buildProjectToListMap,
@@ -80,6 +81,13 @@ const secrets = createSecretStore();
 // 生命周期日志（写入宿主的插件日志，桌面 / 移动端都能在「设置 → 插件」里查看）。
 // 任何一步都不能抛错：这里只用于在移动端排查「视图入口为何没出现」时定位卡在哪一步。
 function lifecycle(msg: string): void {
+  // 同时写 console：桌面端可用 CDP 抓取，移动端仍以宿主插件日志为准。
+  try {
+    const g = globalThis as { console?: { log?: (...args: unknown[]) => void } };
+    g.console?.log?.(`[ms-todo ${PLUGIN_VERSION}] ${msg}`);
+  } catch {
+    // 忽略 console 失败。
+  }
   try {
     PluginAPI.log?.info?.(`[ms-todo ${PLUGIN_VERSION}] ${msg}`);
   } catch {
@@ -108,6 +116,30 @@ function cacheContext(config: Record<string, unknown>, http: PluginHttp): void {
 const issueListCache = new Map<string, string>();
 const ISSUE_LIST_CACHE_MAX = 3000;
 
+// 404 负缓存：确认所有列表都找不到的 issueId，10 分钟内不再重复「列全部列表 +
+// 每列表 probe」。视图对账/失效链接扫描可能反复碰到已删除任务，没有这个缓存
+// 会再次制造 Graph 请求风暴（2026-10-26 实测每轮数十个 404）。
+const missingIssueCache = new Map<string, number>();
+const MISSING_ISSUE_TTL_MS = 10 * 60_000;
+const MISSING_ISSUE_CACHE_MAX = 3000;
+
+function isRecentlyMissing(issueId: string): boolean {
+  const at = missingIssueCache.get(issueId);
+  if (at === undefined) return false;
+  if (Date.now() - at < MISSING_ISSUE_TTL_MS) return true;
+  missingIssueCache.delete(issueId);
+  return false;
+}
+
+function rememberMissing(issueId: string): void {
+  missingIssueCache.delete(issueId);
+  missingIssueCache.set(issueId, Date.now());
+  if (missingIssueCache.size > MISSING_ISSUE_CACHE_MAX) {
+    const oldest = missingIssueCache.keys().next().value;
+    if (oldest) missingIssueCache.delete(oldest);
+  }
+}
+
 function rememberIssueList(issueId: string, listId: string | undefined): void {
   if (!issueId || !listId) return;
   if (issueListCache.has(issueId)) issueListCache.delete(issueId);
@@ -121,6 +153,25 @@ function rememberIssueList(issueId: string, listId: string | undefined): void {
 function knownIssueList(issueId: string): string | undefined {
   return issueListCache.get(issueId);
 }
+
+// 每个列表的任务快照（进程内、设备本地）：把轮询从「每轮整表分页 + 缺失 id
+// 逐个 404 探测」降为「冷启动一次整表，之后每 TTL 一条 lastModified 增量」。
+// 2026-10-26 实测：旧实现每分钟数百次 Graph 请求 → 429/HTTP2 错误 →
+// 宿主 getByIds 的 catch 丢弃整批更新（MS 完成状态因此长期拉不回来）。
+const taskCache = new TodoTaskCache({
+  onError: (message, error) => {
+    lifecycle(message + ': ' + (error instanceof Error ? error.message : String(error)));
+  },
+  onRefresh: (info) => {
+    lifecycle(
+      `cache ${info.mode} list=…${info.listId.slice(-8)}` +
+        (info.since ? ` since=${info.since}` : '') +
+        (info.changed !== undefined ? ` changed=${info.changed}` : '') +
+        ` cached=${info.cached}` +
+        (info.error ? ` error=${info.error}` : ''),
+    );
+  },
+});
 
 // 顶部按钮拿不到 issueProvider 注入的 http，优先用最近一次缓存；没有就退到
 // PluginAPI.request（manifest 已声明 http + allowedHosts）。两者底层同一个
@@ -279,12 +330,8 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
     try {
       const { listId, maxTasks } = parseConfig(config);
       const token = await getToken(config, http);
-      const tasks = await graphRequestAll<TodoTask>(
-        `/me/todo/lists/${listId}/tasks`,
-        token,
-        maxTasks,
-        http,
-      );
+      const all = await taskCache.getAll(listId, token, http);
+      const tasks = maxTasks > 0 ? all.slice(0, maxTasks) : all;
       const term = searchTerm.trim().toLowerCase();
       return tasks
         .filter((t) => !term || t.title.toLowerCase().includes(term))
@@ -302,12 +349,8 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
     try {
       const { listId, maxTasks } = parseConfig(config);
       const token = await getToken(config, http);
-      const tasks = await graphRequestAll<TodoTask>(
-        `/me/todo/lists/${listId}/tasks`,
-        token,
-        maxTasks,
-        http,
-      );
+      const all = await taskCache.getAll(listId, token, http);
+      const tasks = maxTasks > 0 ? all.slice(0, maxTasks) : all;
       return tasks.map(mapTaskToSearchResult);
     } catch {
       return [];
@@ -344,14 +387,19 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
       );
     });
     rememberIssueList(issueId, usedListId);
+    missingIssueCache.delete(issueId);
+    taskCache.remember(usedListId, task);
     return mapTaskToIssue(task);
   },
 
   // 批量版 getById：宿主刷新大量已链接任务时会优先调用它。不实现时宿主会退化为
-  // 「每个任务一次 GET」的串行循环——任务一多（本用户 660+）一轮跑不完，批次尾部
-  // 的更新会被下一次 timer/上下文切换取消，表现为「MS 端改了、SP 永远收不到」。
-  // 这里一次分页拉取整张列表即可覆盖绝大多数任务；被挪到其它列表的少量 id 再走
-  // getById 的 404 自愈（有上限，避免拖慢整轮）。
+  // 「每个任务一次 GET」的串行循环——任务一多一轮跑不完，批次尾部会被下一次
+  // timer/上下文切换取消，表现为「MS 端改了、SP 永远收不到」。
+  //
+  // 实现要点（见 list-cache.ts）：只读进程内列表快照，缺失的 id 直接跳过，
+  // 绝不在这里逐个 404 探测。整批请求失败时也返回缓存，避免宿主 catch→[] 丢整批。
+  // 被挪到其它列表的任务由缓存跨列表取最新副本；彻底缺失（远端已删）由视图
+  // 「体检 / 对账」处理。
   async getByIds(
     issueIds: string[],
     config: Record<string, unknown>,
@@ -360,30 +408,24 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
     cacheContext(config, http);
     const ids = [...new Set(issueIds.filter((id) => !!id))];
     if (ids.length === 0) return [];
-    const { listId } = parseConfig(config);
-    const token = await getToken(config, http);
-    // 分页直到覆盖所有请求的 id（不被 maxTasks 截断；最多 40 页 ≈ 2000 条）。
-    const tasks = await graphRequestPagesUntil<TodoTask>(
-      `/me/todo/lists/${listId}/tasks`,
-      token,
-      http,
-      (items) => {
-        const have = new Set(items.map((t) => t.id));
-        return ids.every((id) => have.has(id));
-      },
-    );
-    for (const task of tasks) rememberIssueList(task.id, listId);
-    const issues = filterIssuesByIds(tasks, ids).map(mapTaskToIssue);
-    const foundIds = new Set(tasks.map((t) => t.id));
-    const missing = ids.filter((id) => !foundIds.has(id));
-    for (const id of missing.slice(0, 20)) {
-      try {
-        issues.push(await issueProviderDefinition.getById(id, config, http));
-      } catch {
-        // 缺失的 id 由宿主跳过（不当作已删除）。
+    try {
+      const { listId } = parseConfig(config);
+      const token = await getToken(config, http);
+      const { tasks } = await taskCache.getByIds(listId, ids, token, http);
+      lifecycle(
+        `getByIds list=…${listId.slice(-8)} want=${ids.length} found=${tasks.length} missing=${ids.length - tasks.length}`,
+      );
+      for (const task of tasks) {
+        rememberIssueList(task.id, taskCache.listIdOf(task.id) ?? listId);
       }
+      return filterIssuesByIds(tasks, ids).map(mapTaskToIssue);
+    } catch (e) {
+      // 配置/令牌层面的错误：返回空而不是抛给宿主（抛错会让宿主把整批当失败）。
+      lifecycle(
+        'getByIds failed: ' + (e instanceof Error ? e.message : String(e)),
+      );
+      return [];
     }
-    return issues;
   },
 
   getIssueLink(_issueId: string, _config: Record<string, unknown>): string {
@@ -495,6 +537,7 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
       { title },
       http,
     );
+    taskCache.remember(listId, task);
     return {
       issueId: task.id,
       issueData: mapTaskToIssue(task),
@@ -520,6 +563,7 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
       await graphRequest('DELETE', `/me/todo/lists/${actual}/tasks/${id}`, token, undefined, http);
     }
     issueListCache.delete(id);
+    taskCache.forget(id);
   },
 
   extractSyncValues,
@@ -599,7 +643,7 @@ async function buildOverview(limit?: number): Promise<ListsOverview> {
   const listsInfo: TodoListInfo[] = [];
   for (const list of lists) {
     const tasks = await graphRequestAll<TodoTask>(
-      `/me/todo/lists/${list.id}/tasks`,
+      `/me/todo/lists/${list.id}/tasks?$top=1000`,
       token,
       effectiveMax,
       http,
@@ -642,6 +686,7 @@ async function findTaskList(
   token: string,
   http: PluginHttp,
 ): Promise<string | undefined> {
+  if (isRecentlyMissing(issueId)) return undefined;
   const lists = await graphRequestAll<TodoList>('/me/todo/lists', token, 0, http);
   for (const list of lists) {
     try {
@@ -659,6 +704,7 @@ async function findTaskList(
       // 404 → 不在这个列表，继续找下一个。
     }
   }
+  rememberMissing(issueId);
   return undefined;
 }
 
@@ -845,7 +891,13 @@ function registerCompletionSyncHook(): void {
   }
   try {
     PluginAPI.registerHook('taskUpdate', (payload) => {
-      const task = payload?.task;
+      const task = payload?.task as SpTask | undefined;
+      // 取消打勾：清掉兜底推送标记。否则同一任务“取消 → 再次打勾”后，
+      // 进程内标记会让兜底通道永久跳过它（即使宿主这次推送失败）。
+      if (task?.issueId && payload?.changes?.['isDone'] === false) {
+        pushedCompletionIssues.delete(task.issueId);
+        return;
+      }
       if (!shouldPushCompletionOnUpdate(task, payload?.changes)) return;
       scheduleCompletionSafetyNet((task as SpTask).id);
     });
