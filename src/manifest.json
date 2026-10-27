@@ -1,7 +1,7 @@
 {
   "id": "ms-todo-provider",
   "name": "Microsoft To Do",
-  "version": "0.1.4",
+  "version": "0.1.8",
   "manifestVersion": 1,
   "minSupVersion": "18.20.0",
   "description": "Two-way sync Microsoft To Do tasks with Super Productivity (desktop + mobile)",
@@ -19,7 +19,7 @@
     "showIndexHtmlAsView"
   ],
   "allowedHosts": ["graph.microsoft.com", "login.microsoftonline.com"],
-  "hooks": [],
+  "hooks": ["taskUpdate"],
   "issueProvider": {
     "pollIntervalMs": 60000,
     "icon": "check_box",

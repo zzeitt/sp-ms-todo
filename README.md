@@ -136,9 +136,18 @@ local completion it checks whether SP already wrote
 `status=completed` itself (idempotent, now retried) and writes the baseline back. Failures
 surface in a snackbar and the plugin log, and the **Reconcile** tab repairs them later.
 
-Pulling is batched too: the plugin implements `getByIds`, so one refresh cycle costs one
-paginated list fetch instead of one GET per linked task (which used to starve the tail of
-the cycle once hundreds of tasks were linked).
+Pulling is batched too (0.1.8+): the plugin keeps an in-process snapshot per list — one
+full fetch on cold start (`$top=1000`, usually a single request), then a single
+`lastModifiedDateTime gt …` incremental per 15 s. `getByIds` reads only the snapshot and
+never probes missing ids one by one. A 60 s poll therefore costs ~1 request per list, which
+avoids Graph 429 / `ERR_HTTP2_PROTOCOL_ERROR`. In practice those errors made the host's
+`getByIds` catch drop the **whole** provider batch, so a completion made in To Do never
+reached SP. Provider instances bound to the same list share one snapshot.
+
+Limitation: MS→SP is still driven by the host's 60 s poll (measured 0–60 s end-to-end).
+Remotely deleted tasks, or tasks moved to an unconfigured list, are no longer probed every
+cycle (deliberate, to avoid request storms); use the **health check** in the plugin view to
+find them.
 
 ## Force sync & dead-link detection (the plugin's standalone view)
 
