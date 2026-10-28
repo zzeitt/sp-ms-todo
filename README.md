@@ -145,9 +145,25 @@ avoids Graph 429 / `ERR_HTTP2_PROTOCOL_ERROR`. In practice those errors made the
 reached SP. Provider instances bound to the same list share one snapshot.
 
 Limitation: MS→SP is still driven by the host's 60 s poll (measured 0–60 s end-to-end).
-Remotely deleted tasks, or tasks moved to an unconfigured list, are no longer probed every
-cycle (deliberate, to avoid request storms); use the **health check** in the plugin view to
-find them.
+Tasks moved to an unconfigured list are recognised by the cross-list probe and are never
+mistaken for deletions.
+
+### Delete sync (0.1.9+)
+
+**SP → To Do** is host-built-in: deleting a linked task waits out the undo window, then
+calls the plugin's `deleteIssue` (Graph DELETE, 404 treated as already deleted, idempotent).
+This covers single and bulk deletes. Host caveat: quitting the app inside the undo window
+drops the remote delete (an orphaned To Do task is left behind).
+
+**To Do → SP** is new in 0.1.9. Each list snapshot is rebuilt authoritatively every
+**5 minutes**, so remotely deleted tasks disappear from it. `getByIds` then confirms a
+missing id (at most 5 per cycle): a successful cross-list `getById` means the task was only
+moved and is returned normally; a confirmed 404 reports a `state='deleted'` placeholder
+issue, and the host deletes the local SP task (asking first when tracked time exists).
+429/network errors are never treated as deletions.
+
+Config **"Keep tasks deleted in To Do"** (unchecked by default): check it to keep the local
+task and only keep the link; unlink manually from **Link health**.
 
 ## Force sync & dead-link detection (the plugin's standalone view)
 

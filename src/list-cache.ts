@@ -10,7 +10,8 @@
 // 新策略：
 //   - 每个列表在进程内缓存一份 id → task 快照；冷启动整表拉一次；
 //   - 之后每 TTL 只发一条 `$filter=lastModifiedDateTime gt <上次同步-2min>` 增量；
-//   - getByIds 只读缓存，绝不因为缺失 id 逐个探测（缺失由视图“体检”处理）；
+//   - getByIds 只读缓存；缺失的 id 由 plugin.ts 做**有界确认探测**
+//     （confirmRemoteDeletions：先排除“被移到别的列表”，确认 404 才上报删除）；
 //   - 任一请求失败都保留旧缓存并返回可用结果，不抛错、不丢整批。
 //
 // 没有持久化：插件代码/存储是设备本地的，进程重启后重新整表拉一次（每进程一次）。
@@ -25,8 +26,11 @@ const REFRESH_TTL_MS = 15_000;
 /** 增量过滤的重叠窗口：避免时钟误差/服务端写入延迟漏掉边界上的修改。 */
 const OVERLAP_MS = 120_000;
 
-/** 定期用整表刷新一次，顺带清理远端已删除的缓存条目。 */
-const FULL_REFRESH_INTERVAL_MS = 30 * 60_000;
+/**
+ * 定期用整表刷新一次：整表结果是权威的，远端已删除的任务会从快照里消失。
+ * 这是「To Do 端删除 → SP 端删除」的检测来源，所以不能太长（默认 5 分钟）。
+ */
+const FULL_REFRESH_INTERVAL_MS = 5 * 60_000;
 
 /** 整表拉取的安全上限，防止超大列表把渲染进程拖死（正常列表远小于此）。 */
 const FULL_FETCH_LIMIT = 5000;
@@ -41,11 +45,20 @@ interface ListEntry {
   lastSyncAt: number;
   /** 上次整表拉取的时间。 */
   lastFullAt: number;
+  /** 最近一次刷新是否成功（失败时不能把 missing 当“已删除”）。 */
+  lastRefreshOk: boolean;
+  /** 单条接口写入的本地时间（用于整表刷新时保住刚写入的条目）。 */
+  rememberedAt: Map<string, number>;
 }
 
 export interface ListTasksResult {
   tasks: TodoTask[];
   missing: string[];
+  /**
+   * 快照是否可信：已做过整表加载，且最近一次刷新成功。
+   * 只有可信时才能把 missing 里的 id 当作“远端可能已删除”的候选。
+   */
+  trustworthy: boolean;
 }
 
 export interface RefreshInfo {
@@ -119,10 +132,14 @@ export class TodoTaskCache {
     if (!listId || !task?.id) return;
     const entry = this.entryFor(listId);
     entry.tasks.set(task.id, task);
+    entry.rememberedAt.set(task.id, this.now());
   }
 
   forget(issueId: string): void {
-    for (const entry of this.lists.values()) entry.tasks.delete(issueId);
+    for (const entry of this.lists.values()) {
+      entry.tasks.delete(issueId);
+      entry.rememberedAt.delete(issueId);
+    }
   }
 
   /**
@@ -145,10 +162,11 @@ export class TodoTaskCache {
     http: PluginHttp,
   ): Promise<ListTasksResult> {
     const ids = [...new Set(issueIds.filter((id) => !!id))];
-    if (ids.length === 0) return { tasks: [], missing: [] };
+    if (ids.length === 0) return { tasks: [], missing: [], trustworthy: false };
 
     await this.refresh(listId, token, http);
 
+    const entry = this.entryFor(listId);
     const tasks: TodoTask[] = [];
     const missing: string[] = [];
     for (const id of ids) {
@@ -156,13 +174,24 @@ export class TodoTaskCache {
       if (best) tasks.push(best.task);
       else missing.push(id);
     }
-    return { tasks, missing };
+    return {
+      tasks,
+      missing,
+      trustworthy: entry.fullLoaded && entry.lastRefreshOk,
+    };
   }
 
   private entryFor(listId: string): ListEntry {
     let entry = this.lists.get(listId);
     if (!entry) {
-      entry = { tasks: new Map(), fullLoaded: false, lastSyncAt: 0, lastFullAt: 0 };
+      entry = {
+        tasks: new Map(),
+        fullLoaded: false,
+        lastSyncAt: 0,
+        lastFullAt: 0,
+        lastRefreshOk: false,
+        rememberedAt: new Map(),
+      };
       this.lists.set(listId, entry);
     }
     return entry;
@@ -203,6 +232,7 @@ export class TodoTaskCache {
     http: PluginHttp,
   ): Promise<void> {
     const now = this.now();
+    const startedAt = now;
     const needsFull = !entry.fullLoaded || now - entry.lastFullAt >= FULL_REFRESH_INTERVAL_MS;
     try {
       if (needsFull) {
@@ -212,15 +242,22 @@ export class TodoTaskCache {
           FULL_FETCH_LIMIT,
           http,
         );
-        const remembered = entry.tasks;
-        entry.tasks = new Map(tasks.map((task) => [task.id, task] as const));
-        // 整表结果更权威；只保留整表里没有的、通过单条接口写入的任务。
-        for (const [id, task] of remembered) {
-          if (!entry.tasks.has(id)) entry.tasks.set(id, task);
+        const fresh = new Map(tasks.map((task) => [task.id, task] as const));
+        // 整表结果是权威的：远端已删除的条目必须消失——这是「To Do 删除 → SP 删除」
+        // 的检测来源。唯一例外是本次刷新开始之后由单条接口（getById / createIssue）
+        // 写入的条目：它们可能还没出现在 Graph 的整表结果里。
+        for (const [id, at] of entry.rememberedAt) {
+          if (at >= startedAt && !fresh.has(id)) {
+            const task = entry.tasks.get(id);
+            if (task) fresh.set(id, task);
+          }
         }
+        entry.tasks = fresh;
+        entry.rememberedAt.clear();
         entry.fullLoaded = true;
         entry.lastFullAt = now;
         entry.lastSyncAt = now;
+        entry.lastRefreshOk = true;
         this.onRefresh?.({
           listId,
           mode: 'full',
@@ -240,6 +277,7 @@ export class TodoTaskCache {
       );
       for (const task of changed) entry.tasks.set(task.id, task);
       entry.lastSyncAt = now;
+      entry.lastRefreshOk = true;
       this.onRefresh?.({
         listId,
         mode: 'incremental',
@@ -249,6 +287,8 @@ export class TodoTaskCache {
       });
     } catch (e) {
       // 保留旧缓存：宁可这一轮数据旧一点，也不能让宿主的整批 pull 变空。
+      // 同时把快照标为不可信：失败的这一轮绝不能把 missing 当“远端已删除”。
+      entry.lastRefreshOk = false;
       this.onError?.(`task cache refresh failed for list ${listId}`, e);
       this.onRefresh?.({
         listId,

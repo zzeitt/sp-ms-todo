@@ -149,3 +149,71 @@ describe('TodoTaskCache — poll 请求预算', () => {
     expect(cache.getCached('x')).toBeUndefined();
   });
 });
+
+describe('TodoTaskCache — 远端删除检测', () => {
+  it('整表刷新是权威的：远端已删的任务会从快照消失并出现在 missing 里', async () => {
+    let now = 10_000;
+    let remote = [{ id: 'a' }, { id: 'b' }];
+    const { http } = httpOf((_method, url) => {
+      if (!url.startsWith(tasksUrl('L1'))) throw new Error('unexpected url ' + url);
+      if (url.includes('$filter')) throw new Error('unexpected filter');
+      return page(remote);
+    });
+    const cache = new TodoTaskCache({ now: () => now });
+
+    const first = await cache.getByIds('L1', ['a', 'b'], 'tok', http);
+    expect(first.tasks.map((t) => t.id).sort()).toEqual(['a', 'b']);
+    expect(first.trustworthy).toBe(true);
+
+    // 远端删除了 b；等到下一次整表刷新。
+    remote = [{ id: 'a' }];
+    now += 31 * 60_000;
+    const second = await cache.getByIds('L1', ['a', 'b'], 'tok', http);
+
+    expect(second.tasks.map((t) => t.id)).toEqual(['a']);
+    expect(second.missing).toEqual(['b']);
+    expect(cache.getCached('b')).toBeUndefined();
+  });
+
+  it('整表刷新期间通过单条接口写入的任务不会被误删', async () => {
+    let cache: TodoTaskCache;
+    const now = 10_000;
+    const { http } = httpOf((_method, url) => {
+      if (!url.startsWith(tasksUrl('L1'))) throw new Error('unexpected url ' + url);
+      if (url.includes('$filter')) throw new Error('unexpected filter');
+      // 模拟 createIssue/getById 在整表请求进行中写入了 x（远端整表结果还没有它）。
+      cache.remember('L1', { id: 'x', title: 'x', status: 'notStarted' });
+      return page([{ id: 'a' }]);
+    });
+    cache = new TodoTaskCache({ now: () => now });
+
+    const res = await cache.getByIds('L1', ['a', 'x'], 'tok', http);
+    expect(res.tasks.map((t) => t.id).sort()).toEqual(['a', 'x']);
+  });
+
+  it('整表刷新失败时 trustworthy=false（禁止把 missing 当删除）', async () => {
+    const { http } = httpOf(() => Object.assign(new Error('status=400'), { status: 400 }));
+    const cache = new TodoTaskCache({ now: () => 1_000 });
+    const res = await cache.getByIds('L1', ['a'], 'tok', http);
+    expect(res.trustworthy).toBe(false);
+    expect(res.missing).toEqual(['a']);
+  });
+
+  it('增量刷新失败后 trustworthy=false', async () => {
+    let now = 10_000;
+    let fail = false;
+    const { http } = httpOf((_method, url) => {
+      if (!url.startsWith(tasksUrl('L1'))) throw new Error('unexpected url ' + url);
+      if (url.includes('$filter')) return fail ? Object.assign(new Error('status=400'), { status: 400 }) : page([]);
+      return page([{ id: 'a' }]);
+    });
+    const cache = new TodoTaskCache({ now: () => now });
+    expect((await cache.getByIds('L1', ['a'], 'tok', http)).trustworthy).toBe(true);
+
+    now += 60_000;
+    fail = true;
+    const res = await cache.getByIds('L1', ['a'], 'tok', http);
+    expect(res.trustworthy).toBe(false);
+    expect(res.tasks.map((t) => t.id)).toEqual(['a']);
+  });
+});

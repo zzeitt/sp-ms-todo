@@ -20,6 +20,25 @@ export const PLUGIN_ISSUE_TYPE = `plugin:${PLUGIN_ID}`;
 /** Graph / To Do 的“已完成”状态值（字段映射与对账都以它为准）。 */
 export const COMPLETED_STATE = 'completed';
 
+/** 宿主 `deletedStates` 使用的“远端已删除”占位状态（不是 Graph 的真实状态）。 */
+export const DELETED_STATE = 'deleted';
+
+/**
+ * To Do 端删除了任务时，是否同步删除本地 SP 任务。
+ *
+ * 配置项是反向开关 `keepRemoteDeletedTasks`（checkbox，默认不勾选）：
+ *   - 未设置 / 未勾选 → 同步删除（默认开启，符合“SP↔MS 双向删除”）；
+ *   - 勾选 → 保留本地任务（只留链接，可在「链接体检」里手动解除）。
+ * 之所以用反向开关：插件配置表单没有“默认勾选”，正向开关在未设置时会显示成关闭，
+ * 与实际行为不一致。
+ */
+export function isDeleteSyncEnabled(
+  config: Record<string, unknown> | undefined,
+): boolean {
+  const keep = config?.['keepRemoteDeletedTasks'];
+  return keep !== true && keep !== 'true' && keep !== 'on' && keep !== 1;
+}
+
 /** 判断任务是否属于本插件（issueType 形如 plugin:ms-todo-provider）。 */
 export function isMsTodoTask(task: SpTask | null | undefined): task is SpTask {
   return !!task && task.issueType === PLUGIN_ISSUE_TYPE;
