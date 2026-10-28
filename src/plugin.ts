@@ -1511,14 +1511,16 @@ async function unlinkTask(taskId: string): Promise<RpcResult> {
       error: t({ zh: '未找到该本地任务（可能已被删除）。', en: 'Local task not found.' }),
     };
   }
+  // 注意：宿主 updateTask 的 typia 校验只接受 `string | undefined`，传 null 会被拒
+  // （报 "invalid type on $input.issueId"）。用 undefined 才是跨宿主版本安全的“清空”。
   await PluginAPI.updateTask(taskId, {
-    issueId: null,
-    issueType: null,
-    issueProviderId: null,
-    issueData: null,
+    issueId: undefined,
+    issueType: undefined,
+    issueProviderId: undefined,
+    issueData: undefined,
     issueWasUpdated: false,
-    issueLastUpdated: null,
-    issueLastSyncedValues: null,
+    issueLastUpdated: undefined,
+    issueLastSyncedValues: undefined,
   });
   return { ok: true, title: task.title };
 }
@@ -1527,7 +1529,10 @@ async function unlinkTask(taskId: string): Promise<RpcResult> {
 // 原任务（等价于「移回正确列表」）。这是破坏性操作：会改变本地任务的 issueId、并删除远端
 // 旧任务，因此只在用户显式二次确认后由视图调用。重建依赖「应属列表 = 该项目已链接任务的
 // 众数列表」；单链接项目或整项目被整体挪走时无法判定，返回错误让用户手动处理。
-async function recreateLink(taskId: string): Promise<RpcResult> {
+async function recreateLink(
+  taskId: string,
+  expectedListIdOverride?: string,
+): Promise<RpcResult> {
   if (!taskId) {
     return { ok: false, error: t({ zh: '缺少任务 id。', en: 'Missing task id.' }) };
   }
@@ -1573,7 +1578,9 @@ async function recreateLink(taskId: string): Promise<RpcResult> {
   }
   const health = classifyLinkedTasks(selectLinkedMsTasks(all), overview.msTaskToList);
   const hit = health.mismatched.find((m) => m.taskId === taskId);
-  const expectedListId = hit?.expectedListId;
+  // 显式指定优先：项目里只有一个链接（或整体被挪走）时众数无法判定，但调用方
+  // （一次性治理脚本 / 高级用户）知道应属列表时可以直接传入。
+  const expectedListId = expectedListIdOverride ?? hit?.expectedListId;
   if (!expectedListId || expectedListId === actualListId) {
     return {
       ok: false,
@@ -1822,7 +1829,10 @@ if (typeof PluginAPI.onMessage === 'function') {
           case 'unlink':
             return await unlinkTask(String(msg.taskId ?? ''));
           case 'recreateLink':
-            return await recreateLink(String(msg.taskId ?? ''));
+            return await recreateLink(
+              String(msg.taskId ?? ''),
+              typeof msg.listId === 'string' && msg.listId ? msg.listId : undefined,
+            );
           case 'deleteMsTask':
             return await deleteMsTask(String(msg.listId ?? ''), String(msg.taskId ?? ''));
           default:
