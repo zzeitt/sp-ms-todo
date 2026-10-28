@@ -22,7 +22,14 @@ export interface TodoTask {
   status: 'notStarted' | 'inProgress' | 'completed' | 'waitingOnOthers' | 'deferred';
   importance?: 'low' | 'normal' | 'high';
   body?: { content: string; contentType: 'text' | 'html' };
+  /**
+   * To Do 的“截止日期”。实测 Graph 会忽略/归一化其中的时刻（例如写
+   * 12-10T06:30Z 会变成 12-10T00:00Z），所以它只承载**日期**。
+   */
   dueDateTime?: { dateTime: string; timeZone: string } | null;
+  /** To Do 的“提醒”（真正的日期+时刻）。isReminderOn 为 true 时才有效。 */
+  reminderDateTime?: { dateTime: string; timeZone: string } | null;
+  isReminderOn?: boolean;
   lastModifiedDateTime?: string;
 }
 
@@ -80,20 +87,130 @@ export function getClientId(
 }
 
 // --- 日期转换 ---
-
+//
 // Graph 的 dueDateTime 形如 { dateTime: 'YYYY-MM-DDTHH:mm:ss.0000000', timeZone }。
-// SP 的 dueDay 是 'YYYY-MM-DD'。v1 取 date 部分、以 UTC 午夜写回（非 UTC 用户
-// 可能看到轻微时区偏移，见 README 已知限制）。
-export function extractDueDate(due?: { dateTime: string; timeZone: string } | null): string | undefined {
-  if (!due?.dateTime) return undefined;
-  return due.dateTime.slice(0, 10);
+//
+// MS To Do 没有独立的 all-day 标志：一个“纯日期”提醒实际存成**用户时区当地午夜**
+// 的绝对时刻（中国 +8 即前一天 16:00Z）。写回时必须按“本机当地午夜”编码；只写
+// UTC 午夜（T00:00:00Z）会变成中国时间 08:00 的**定时**提醒。读回时也不能看墙钟
+// 是否 00:00，而要把值还原成绝对时刻后判断“本机是不是正好午夜”。
+
+export interface GraphDue {
+  dateTime: string;
+  timeZone: string;
 }
 
+export interface ParsedGraphDue {
+  /** 绝对时刻（毫秒）。 */
+  ms: number;
+  /** 该时刻在本机时区是否正好是午夜 → 等价于 MS 的“纯日期”。 */
+  isDateOnly: boolean;
+  /** 纯日期时，本机时区下的日期 YYYY-MM-DD。 */
+  localDay: string;
+}
+
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+interface WallClock {
+  y: number;
+  mo: number;
+  d: number;
+  h: number;
+  mi: number;
+  s: number;
+}
+
+function parseWallClock(dateTime: string): WallClock | undefined {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(dateTime);
+  if (!m) return undefined;
+  return {
+    y: Number(m[1]),
+    mo: Number(m[2]) - 1,
+    d: Number(m[3]),
+    h: Number(m[4]),
+    mi: Number(m[5]),
+    s: Number(m[6]),
+  };
+}
+
+// 墙钟 → 绝对毫秒：UTC 按 UTC；其它时区名按本机墙钟解析。
+// （用户设备与 To Do 通常同一时区；跨时区场景见 README 已知限制。）
+function wallClockToMs(w: WallClock, timeZone: string): number {
+  return timeZone === 'UTC'
+    ? Date.UTC(w.y, w.mo, w.d, w.h, w.mi, w.s)
+    : new Date(w.y, w.mo, w.d, w.h, w.mi, w.s, 0).getTime();
+}
+
+/** 解析 Graph dueDateTime → 绝对时刻 + 是否纯日期 + 本机日期。 */
+export function parseGraphDue(due?: GraphDue | null): ParsedGraphDue | undefined {
+  if (!due?.dateTime) return undefined;
+  const w = parseWallClock(due.dateTime);
+  if (!w) return undefined;
+  const ms = wallClockToMs(w, due.timeZone);
+  if (!Number.isFinite(ms)) return undefined;
+  const local = new Date(ms);
+  const isLocalMidnight =
+    local.getHours() === 0 && local.getMinutes() === 0 && local.getSeconds() === 0;
+  // 兼容旧版插件写回的 `T00:00:00Z`（UTC 午夜）：那是当时“纯日期”的编码方式。
+  // 不兼容它会让旧任务的同步基线看起来“远端已变”，宿主因此永远跳过本地日期推送。
+  const isLegacyUtcMidnight =
+    due.timeZone === 'UTC' && w.h === 0 && w.mi === 0 && w.s === 0;
+  const isDateOnly = isLocalMidnight || isLegacyUtcMidnight;
+  return {
+    ms,
+    isDateOnly,
+    localDay: `${local.getFullYear()}-${pad2(local.getMonth() + 1)}-${pad2(local.getDate())}`,
+  };
+}
+
+/** Graph → SP 的纯日期（dueDay）；定时提醒返回 undefined。 */
+export function extractDueDate(due?: GraphDue | null): string | undefined {
+  const parsed = parseGraphDue(due);
+  return parsed?.isDateOnly ? parsed.localDay : undefined;
+}
+
+/** Graph → SP 的带时刻截止（dueWithTime，绝对毫秒）；纯日期返回 undefined。 */
+export function extractDueWithTime(due?: GraphDue | null): number | undefined {
+  const parsed = parseGraphDue(due);
+  if (!parsed || parsed.isDateOnly) return undefined;
+  return parsed.ms;
+}
+
+/** 设备时区的 IANA 名称（Graph To Do 接受 IANA；不可用时退回 UTC）。 */
+export function deviceTimeZone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return typeof tz === 'string' && tz ? tz : 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+/**
+ * SP 的纯日期（dueDay）→ Graph dueDateTime。
+ *
+ * 实测（2026-10-28，Graph v1.0）：纯日期必须写成 `<日期>T00:00:00` + **用户时区名**
+ * （IANA 如 `Asia/Shanghai` 或 Windows 如 `China Standard Time` 都接受），MS 会把它
+ * 归一化成“当地午夜的 UTC 即时”返回。若写成 UTC 午夜（`T00:00:00Z`）会被当成 08:00
+ * 的定时提醒；写成“当地午夜的 UTC 即时 + timeZone:'UTC'”则会被 MS 丢弃时刻、只取
+ * UTC 日期，导致日期偏移。
+ */
 export function buildDueDateTime(
   dueDay: string | null | undefined,
-): { dateTime: string; timeZone: string } | null {
+  timeZone: string = deviceTimeZone(),
+): GraphDue | null {
   if (!dueDay) return null;
-  return { dateTime: dueDay + 'T00:00:00.0000000', timeZone: 'UTC' };
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dueDay);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]) - 1;
+  const d = Number(m[3]);
+  const local = new Date(y, mo, d, 0, 0, 0, 0);
+  // 拒绝 2026-13-40 这类会被 Date 自动进位的输入。
+  if (local.getFullYear() !== y || local.getMonth() !== mo || local.getDate() !== d) {
+    return null;
+  }
+  return { dateTime: `${dueDay}T00:00:00.0000000`, timeZone };
 }
 
 // 从毫秒时间戳构造 Graph dueDateTime（写回带时刻的截止用）。与 buildDueDateTime
@@ -111,51 +228,55 @@ export function buildDueDateTimeFromTs(
   return { dateTime, timeZone: 'UTC' };
 }
 
-// 提取带时刻的截止时间（SP 的 dueWithTime，毫秒时间戳）。
-//
-// MS 的纯日期提醒存成该时区午夜（HH:mm:ss 全 0），与「恰好半夜」的定时提醒无法
-// 区分，这里按约定把午夜视为纯日期、返回 undefined（交给 dueDate/dueDay 表达）。
-// dateTime 是 timeZone 下的墙钟时间（无偏移后缀）；UTC 时区（含本插件写回的值）
-// 按 UTC 解析，其余按本机墙钟解析（用户在 MS 与 SP 通常同一时区）。
-export function extractDueWithTime(
-  due?: { dateTime: string; timeZone: string } | null,
-): number | undefined {
-  if (!due?.dateTime) return undefined;
-  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/.exec(due.dateTime);
-  if (!m) return undefined;
-  const [, ys, mos, ds, hs, mis, ss] = m;
-  const y = Number(ys);
-  const mo = Number(mos) - 1;
-  const d = Number(ds);
-  const h = Number(hs);
-  const mi = Number(mis);
-  const s = Number(ss);
-  if (h === 0 && mi === 0 && s === 0) return undefined;
-  const ms =
-    due.timeZone === 'UTC'
-      ? Date.UTC(y, mo, d, h, mi, s)
-      : new Date(y, mo, d, h, mi, s).getTime();
-  return Number.isFinite(ms) ? ms : undefined;
+/** 绝对时刻 → 本机 'YYYY-MM-DD HH:mm'。 */
+export function formatLocalInstant(ms: number): string {
+  const d = new Date(ms);
+  return (
+    `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+  );
 }
 
-// 展示用的截止文案：纯日期显示 'YYYY-MM-DD'，带时刻显示 'YYYY-MM-DD HH:mm'。
+/** 本机时区下某时刻的日期 YYYY-MM-DD。 */
+export function localDayOf(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * 展示用的截止文案：
+ *   - 有提醒（isReminderOn）→ 提醒的日期+时刻；
+ *   - 否则有截止日期 → 日期（旧版写入的时刻仍显示为日期+时刻，兼容历史数据）。
+ */
 export function formatDueDisplay(
-  due?: { dateTime: string; timeZone: string } | null,
+  due?: GraphDue | null,
+  reminder?: GraphDue | null,
+  isReminderOn?: boolean,
 ): string | undefined {
-  if (!due?.dateTime) return undefined;
-  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(due.dateTime);
-  if (!m) return due.dateTime.slice(0, 10);
-  return m[2] === '00:00' ? m[1] : `${m[1]} ${m[2]}`;
+  if (isReminderOn && reminder) {
+    const r = parseGraphDue(reminder);
+    if (r) return formatLocalInstant(r.ms);
+  }
+  const parsed = parseGraphDue(due);
+  if (!parsed) return undefined;
+  return parsed.isDateOnly ? parsed.localDay : formatLocalInstant(parsed.ms);
 }
 
 // --- 映射 ---
 
 export function mapTaskToIssue(task: TodoTask): PluginIssue {
-  // MS 只有一种截止字段 dueDateTime；纯日期与带时刻靠「是否午夜」区分。
-  // 带时刻的走 SP 的 dueWithTime，纯日期走 dueDate/dueDay，避免两者同时存在。
-  const dueWithTime = extractDueWithTime(task.dueDateTime);
-  const dueDate =
-    dueWithTime === undefined ? extractDueDate(task.dueDateTime) : undefined;
+  // To Do 的数据模型：dueDateTime 只承载**日期**，reminderDateTime 承载**时刻**。
+  //   - dueDateTime → dueDate（SP 的 dueDay）
+  //   - reminderDateTime（isReminderOn=true）→ dueWithTime
+  // 兼容旧数据：旧版把时刻写进 dueDateTime（Graph 现在会归一化，但历史值仍在），
+  // 没有 reminder 时仍把其时刻当作 dueWithTime。
+  const due = parseGraphDue(task.dueDateTime);
+  const reminder =
+    task.isReminderOn && task.reminderDateTime
+      ? parseGraphDue(task.reminderDateTime)
+      : undefined;
+  const dueDate = due?.localDay;
+  const dueWithTime = reminder?.ms ?? (due && !due.isDateOnly ? due.ms : undefined);
   return {
     id: task.id,
     title: task.title,
@@ -170,7 +291,11 @@ export function mapTaskToIssue(task: TodoTask): PluginIssue {
     importance: task.importance,
     dueDate,
     dueWithTime,
-    dueDisplay: formatDueDisplay(task.dueDateTime),
+    dueDisplay: formatDueDisplay(
+      task.dueDateTime,
+      task.reminderDateTime,
+      task.isReminderOn,
+    ),
     dueDateTime: task.dueDateTime,
   };
 }
@@ -218,8 +343,10 @@ export const FIELD_MAPPINGS = [
     defaultDirection: 'both',
     toIssueValue: (taskValue: unknown): string | null =>
       (taskValue as string) || null,
-    toTaskValue: (issueValue: unknown): string | undefined =>
-      (issueValue as string) || undefined,
+    // 远端没有日期时返回 null（而不是 undefined），让宿主能清除本地旧值：
+    // 纯日期 ↔ 定时切换、远端清空日期都依赖这个“显式置空”。
+    toTaskValue: (issueValue: unknown): string | null =>
+      typeof issueValue === 'string' && issueValue ? issueValue : null,
   },
   {
     taskField: 'dueWithTime',
@@ -227,8 +354,8 @@ export const FIELD_MAPPINGS = [
     defaultDirection: 'both',
     toIssueValue: (taskValue: unknown): number | null =>
       typeof taskValue === 'number' ? taskValue : null,
-    toTaskValue: (issueValue: unknown): number | undefined =>
-      typeof issueValue === 'number' ? issueValue : undefined,
+    toTaskValue: (issueValue: unknown): number | null =>
+      typeof issueValue === 'number' ? issueValue : null,
   },
 ] satisfies PluginFieldMapping[];
 

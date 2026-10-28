@@ -195,18 +195,25 @@ describe('buildCreateTaskBody', () => {
     });
   });
 
-  it('maps dueDay to UTC-midnight dueDateTime', () => {
+  it('maps dueDay to <day>T00:00:00 in the device timezone', () => {
     expect(buildCreateTaskBody(makeTask({ dueDay: '2026-08-26' })).dueDateTime).toEqual({
       dateTime: '2026-08-26T00:00:00.0000000',
-      timeZone: 'UTC',
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     });
   });
 
-  it('prefers dueWithTime (full UTC wall-clock) over dueDay', () => {
+  it('maps dueWithTime to reminderDateTime + the local date (time belongs to the reminder)', () => {
     const ms = Date.UTC(2026, 7, 26, 6, 30, 0);
-    expect(
-      buildCreateTaskBody(makeTask({ dueDay: '2026-08-26', dueWithTime: ms })).dueDateTime,
-    ).toEqual({ dateTime: '2026-08-26T06:30:00.0000000', timeZone: 'UTC' });
+    const body = buildCreateTaskBody(makeTask({ dueDay: '2026-08-26', dueWithTime: ms }));
+    expect(body.reminderDateTime).toEqual({
+      dateTime: '2026-08-26T06:30:00.0000000',
+      timeZone: 'UTC',
+    });
+    expect(body.isReminderOn).toBe(true);
+    expect(body.dueDateTime).toEqual({
+      dateTime: '2026-08-26T00:00:00.0000000',
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    });
   });
 });
 

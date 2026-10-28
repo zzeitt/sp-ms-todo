@@ -18,11 +18,26 @@ const baseTask: TodoTask = {
   status: 'notStarted',
 };
 
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/** 本机时区某天午夜（测试在任何时区都成立）。 */
+const localMidnight = (y: number, m: number, d: number): number =>
+  new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+
+/** MS 表示“纯日期”的形态：当地午夜的 UTC 即时（中国即前一天 16:00Z）。 */
+const dateOnlyDue = (y: number, m: number, d: number) => {
+  const t = new Date(localMidnight(y, m, d));
+  return {
+    dateTime:
+      `${t.getUTCFullYear()}-${pad2(t.getUTCMonth() + 1)}-${pad2(t.getUTCDate())}` +
+      `T${pad2(t.getUTCHours())}:${pad2(t.getUTCMinutes())}:${pad2(t.getUTCSeconds())}.0000000`,
+    timeZone: 'UTC',
+  };
+};
+
 describe('extractDueDate', () => {
-  it('extracts the date part', () => {
-    expect(
-      extractDueDate({ dateTime: '2026-08-21T10:30:00.0000000', timeZone: 'UTC' }),
-    ).toBe('2026-08-21');
+  it('extracts the local date of a date-only reminder', () => {
+    expect(extractDueDate(dateOnlyDue(2026, 8, 21))).toBe('2026-08-21');
   });
 
   it('returns undefined for missing / null / empty', () => {
@@ -33,11 +48,10 @@ describe('extractDueDate', () => {
 });
 
 describe('buildDueDateTime', () => {
-  it('builds UTC midnight', () => {
-    expect(buildDueDateTime('2026-08-21')).toEqual({
-      dateTime: '2026-08-21T00:00:00.0000000',
-      timeZone: 'UTC',
-    });
+  it('writes date-only as <date>T00:00:00 in the device timezone', () => {
+    const due = buildDueDateTime('2026-08-21')!;
+    expect(due.dateTime).toBe('2026-08-21T00:00:00.0000000');
+    expect(due.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   });
 
   it('returns null for empty / null / undefined', () => {
@@ -64,10 +78,8 @@ describe('buildDueDateTimeFromTs', () => {
 });
 
 describe('extractDueWithTime', () => {
-  it('returns undefined for midnight (date-only reminder)', () => {
-    expect(
-      extractDueWithTime({ dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' }),
-    ).toBeUndefined();
+  it('returns undefined for local midnight (date-only reminder)', () => {
+    expect(extractDueWithTime(dateOnlyDue(2026, 8, 21))).toBeUndefined();
     expect(
       extractDueWithTime({
         dateTime: '2026-08-21T00:00:00.0000000',
@@ -96,15 +108,16 @@ describe('extractDueWithTime', () => {
 });
 
 describe('formatDueDisplay', () => {
-  it('shows date only for midnight', () => {
-    expect(
-      formatDueDisplay({ dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' }),
-    ).toBe('2026-08-21');
+  it('shows date only for a date-only reminder', () => {
+    expect(formatDueDisplay(dateOnlyDue(2026, 8, 21))).toBe('2026-08-21');
   });
 
-  it('shows date + time for a timed reminder', () => {
+  it('shows date + local time for a timed reminder', () => {
     expect(
-      formatDueDisplay({ dateTime: '2026-08-21T14:05:00.0000000', timeZone: 'UTC' }),
+      formatDueDisplay({
+        dateTime: '2026-08-21T14:05:00.0000000',
+        timeZone: 'China Standard Time',
+      }),
     ).toBe('2026-08-21 14:05');
   });
 
@@ -128,7 +141,7 @@ describe('mapTaskToIssue', () => {
     const issue = mapTaskToIssue({
       ...baseTask,
       body: { content: 'notes here', contentType: 'text' },
-      dueDateTime: { dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' },
+      dueDateTime: dateOnlyDue(2026, 8, 21),
       importance: 'high',
     });
     expect(issue.body).toBe('notes here');
@@ -148,20 +161,35 @@ describe('mapTaskToIssue', () => {
     expect(mapTaskToIssue(baseTask).lastUpdated).toBeUndefined();
   });
 
-  it('emits dueWithTime (not dueDate) for a timed reminder', () => {
+  it('maps reminderDateTime (isReminderOn) to dueWithTime, dueDateTime to dueDate', () => {
     const issue = mapTaskToIssue({
       ...baseTask,
-      dueDateTime: { dateTime: '2026-08-21T14:00:00.0000000', timeZone: 'UTC' },
+      dueDateTime: dateOnlyDue(2026, 8, 21),
+      reminderDateTime: {
+        dateTime: '2026-08-21T14:00:00.0000000',
+        timeZone: 'China Standard Time',
+      },
+      isReminderOn: true,
     });
-    expect(issue.dueWithTime).toBe(Date.UTC(2026, 7, 21, 14, 0, 0));
-    expect(issue.dueDate).toBeUndefined();
+    expect(issue.dueDate).toBe('2026-08-21');
+    expect(issue.dueWithTime).toBe(new Date(2026, 7, 21, 14, 0, 0).getTime());
+    expect(issue.dueDisplay).toBe('2026-08-21 14:00');
+  });
+
+  it('keeps legacy timed dueDateTime values as dueWithTime (backward compatible)', () => {
+    const issue = mapTaskToIssue({
+      ...baseTask,
+      dueDateTime: { dateTime: '2026-08-21T14:00:00.0000000', timeZone: 'China Standard Time' },
+    });
+    expect(issue.dueDate).toBe('2026-08-21');
+    expect(issue.dueWithTime).toBe(new Date(2026, 7, 21, 14, 0, 0).getTime());
     expect(issue.dueDisplay).toBe('2026-08-21 14:00');
   });
 
   it('emits dueDate (not dueWithTime) for a date-only reminder', () => {
     const issue = mapTaskToIssue({
       ...baseTask,
-      dueDateTime: { dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' },
+      dueDateTime: dateOnlyDue(2026, 8, 21),
     });
     expect(issue.dueDate).toBe('2026-08-21');
     expect(issue.dueWithTime).toBeUndefined();
@@ -175,7 +203,7 @@ describe('mapTaskToSearchResult', () => {
       ...baseTask,
       status: 'completed',
       body: { content: 'the body', contentType: 'text' },
-      dueDateTime: { dateTime: '2026-08-21T00:00:00.0000000', timeZone: 'UTC' },
+      dueDateTime: dateOnlyDue(2026, 8, 21),
       lastModifiedDateTime: '2026-08-21T00:00:00Z',
       importance: 'high',
     });

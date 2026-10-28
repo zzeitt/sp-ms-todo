@@ -217,8 +217,11 @@ The view is split into five functional tabs:
 - **Reconcile**: scan every linked task for a **completion divergence** (local `isDone` vs the
   last synced baseline `issueLastSyncedValues.state`) and fix each one: remote completed →
   tick locally; local completed → push `completed`; both completed → rewrite the baseline only.
-  Each row shows the action taken and any error, so missed pushes and stale baselines can be
-  repaired without waiting for the next poll.
+  It also scans **due-date divergences** (local `dueDay`/`dueWithTime` vs the baseline): when
+  the remote date is unchanged the local date is pushed, otherwise the row is skipped so the
+  poll can pull the remote value. Each row shows the action taken and any error, so missed
+  pushes, edits synced from another device, and stale baselines can be repaired without
+  waiting for the next poll.
 - **Cleanup**: browse To Do tasks per list with inline actions — unlink already-linked tasks
   (back to Push), or delete the remote task for unlinked ones (with a confirmation step).
 - The status bar shows the **human-readable list name / project name / task count**; when not
@@ -242,7 +245,7 @@ The view is split into five functional tabs:
 | `title` | `title` | both |
 | `notes` | `body.content` (`text`) | both |
 | `dueDay` | `dueDateTime` (date-only) | both |
-| `dueWithTime` | `dueDateTime` (date + time) | both |
+| `dueWithTime` | `reminderDateTime` (+ `isReminderOn`) | both |
 
 ## Known limitations
 
@@ -258,12 +261,18 @@ The view is split into five functional tabs:
   guaranteed by Microsoft — verify with your account type; work/school accounts are fine.
 - **Refresh token expiry**: the Graph refresh token rolls for 90 days. As long as the plugin
   syncs at least once every 90 days it renews automatically; after 90 days idle you sign in again.
-- **Timezones**: a To Do reminder that only has a *date* (no time) is stored by Microsoft as
-  that day's local midnight, so the plugin distinguishes date-only vs. date+time by whether the
-  time is `00:00` — a timed reminder set exactly at midnight is treated as date-only. Times are
-  parsed in the reminder's own timezone (`UTC` is parsed as UTC; anything else as the device's
-  local wall-clock), and `dueWithTime` is written back to Graph as UTC; if your To Do timezone
-  differs from your device timezone, times may shift.
+- **Dates and times (0.1.10+)**: in To Do, **`dueDateTime` only carries a date** (measured: a
+  time written there is normalised away) and **the time lives in `reminderDateTime`
+  (`isReminderOn`)**.
+  - Read: `dueDateTime` → `dueDay`; `reminderDateTime` → `dueWithTime`. Legacy values that
+    stored a time in `dueDateTime` are still read compatibly so migrated tasks are not mistaken
+    for remotely changed ones.
+  - Write: a planned day → `<date>T00:00:00` plus the **device timezone** (Graph accepts IANA
+    names such as `Asia/Shanghai`), which To Do normalises to local midnight and shows as a
+    date; a scheduled time → `reminderDateTime = instant` + `isReminderOn=true`, with
+    `dueDateTime` aligned to the local date; clearing the time clears the reminder.
+  - Limitation: To Do has no all-day flag; if your To Do timezone differs from your device
+    timezone, timed values may shift (timezone names are parsed as the device's local wall-clock).
 - **Subtasks**: SP subtasks ↔ To Do `checklistItems` is not implemented (a separate collection
   that field mappings can't express).
 - **Tags / time tracking**: To Do has no matching fields, so they don't sync.
