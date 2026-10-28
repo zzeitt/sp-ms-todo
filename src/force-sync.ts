@@ -12,7 +12,8 @@
 // 本文件只放纯函数；接宿主 PluginAPI 的副作用组装在 plugin.ts。
 
 import type { SpTask } from './types';
-import { buildDueDateTimeFromTs } from './domain';
+import type { GraphDue } from './domain';
+import { buildDueDateTime, buildDueDateTimeFromTs, localDayOf } from './domain';
 
 export const PLUGIN_ID = 'ms-todo-provider';
 export const PLUGIN_ISSUE_TYPE = `plugin:${PLUGIN_ID}`;
@@ -197,6 +198,25 @@ export function selectCompletionDivergences(tasks: SpTask[]): SpTask[] {
   });
 }
 
+/**
+ * 选出「计划日期分叉」的任务：本地 dueDay/dueWithTime 与同步基线不一致。
+ * 用于「对账」页把本地后改的日期补推到 MS（任务多时宿主的推送偶发漏掉/来自
+ * 另一台设备的修改不会触发本机推送）。
+ */
+export function selectDueDivergences(tasks: SpTask[]): SpTask[] {
+  const asDay = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+  const asTime = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  return tasks.filter((task) => {
+    if (!isMsTodoTask(task) || !task.issueId) return false;
+    const lsv = task.issueLastSyncedValues as Record<string, unknown> | undefined;
+    return (
+      asDay(task.dueDay) !== asDay(lsv?.['dueDate']) ||
+      asTime(task.dueWithTime) !== asTime(lsv?.['dueWithTime'])
+    );
+  });
+}
+
 /** 把已完成状态写进同步基线（保留其它已同步字段）。 */
 export function withCompletedBaseline(
   baseline: Record<string, unknown> | undefined,
@@ -215,7 +235,10 @@ export interface CreateTaskBody {
   title: string;
   status?: 'notStarted' | 'completed';
   body?: { content: string; contentType: 'text' };
-  dueDateTime?: { dateTime: string; timeZone: string } | null;
+  dueDateTime?: GraphDue | null;
+  /** To Do 的“时刻”存放在提醒里。 */
+  reminderDateTime?: GraphDue | null;
+  isReminderOn?: boolean;
 }
 
 /** 用本地任务字段构建 Graph 创建任务请求体（与 domain.ts 的字段映射一致）。 */
@@ -226,9 +249,15 @@ export function buildCreateTaskBody(
   if (task.isDone) body.status = 'completed';
   if (task.notes) body.body = { content: task.notes, contentType: 'text' };
   if (typeof task.dueWithTime === 'number') {
-    body.dueDateTime = buildDueDateTimeFromTs(task.dueWithTime);
+    // 定时：时刻写进 reminderDateTime（dueDateTime 只放日期，Graph 会丢掉其中的时刻）。
+    body.reminderDateTime = buildDueDateTimeFromTs(task.dueWithTime);
+    body.isReminderOn = true;
+    const day = buildDueDateTime(localDayOf(task.dueWithTime));
+    if (day) body.dueDateTime = day;
   } else if (task.dueDay) {
-    body.dueDateTime = { dateTime: task.dueDay + 'T00:00:00.0000000', timeZone: 'UTC' };
+    // 纯日期：<日期>T00:00:00 + 设备时区名（Graph 会归一化成当地午夜）。
+    const due = buildDueDateTime(task.dueDay);
+    if (due) body.dueDateTime = due;
   }
   return body;
 }

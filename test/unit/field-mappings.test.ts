@@ -48,7 +48,7 @@ describe('FIELD_MAPPINGS', () => {
     expect(m.toIssueValue('2026-08-21', ctx)).toBe('2026-08-21');
     expect(m.toIssueValue('', ctx)).toBeNull();
     expect(m.toTaskValue('2026-08-21', ctx)).toBe('2026-08-21');
-    expect(m.toTaskValue('', ctx)).toBeUndefined();
+    expect(m.toTaskValue('', ctx)).toBeNull();
   });
 
   it('dueWithTime <-> dueWithTime (millis)', () => {
@@ -58,7 +58,7 @@ describe('FIELD_MAPPINGS', () => {
     expect(m.toIssueValue(undefined, ctx)).toBeNull();
     expect(m.toIssueValue('not-a-number', ctx)).toBeNull();
     expect(m.toTaskValue(ms, ctx)).toBe(ms);
-    expect(m.toTaskValue(null, ctx)).toBeUndefined();
-    expect(m.toTaskValue('not-a-number', ctx)).toBeUndefined();
+    expect(m.toTaskValue(null, ctx)).toBeNull();
+    expect(m.toTaskValue('not-a-number', ctx)).toBeNull();
   });
 });

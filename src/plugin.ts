@@ -25,6 +25,7 @@ import {
   extractSyncValues,
   FIELD_MAPPINGS,
   getClientId,
+  localDayOf,
   mapTaskToIssue,
   mapTaskToSearchResult,
   parseConfig,
@@ -48,6 +49,7 @@ import {
   PLUGIN_ISSUE_TYPE,
   resolvePushListId,
   selectCompletionDivergences,
+  selectDueDivergences,
   selectLinkedMsTasks,
   selectTasksToSync,
   shouldPushCompletionOnUpdate,
@@ -509,7 +511,15 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
     // 变更（schedule/reSchedule/unschedule）以 dueWithTime 到达；纯日期（planner
     // planForDay / transferTask）以 dueDate 到达。null 表示清除截止。
     if (changes.dueWithTime !== undefined) {
-      patch.dueDateTime = buildDueDateTimeFromTs(changes.dueWithTime as number | null);
+      // To Do 的“时刻”是 reminderDateTime；dueDateTime 只承载日期（Graph 会归一化
+      // 其中的时刻）。定时 → 设提醒并把 due 日期对齐到该时刻的本地日期；
+      // 取消定时（null）→ 清掉提醒，保留已有日期。
+      const reminder = buildDueDateTimeFromTs(changes.dueWithTime as number | null);
+      patch.reminderDateTime = reminder;
+      patch.isReminderOn = reminder !== null;
+      if (typeof changes.dueWithTime === 'number' && Number.isFinite(changes.dueWithTime)) {
+        patch.dueDateTime = buildDueDateTime(localDayOf(changes.dueWithTime));
+      }
     } else if (changes.dueDate !== undefined) {
       patch.dueDateTime = buildDueDateTime(changes.dueDate as string | null);
     }
@@ -1015,6 +1025,7 @@ async function reconcileCompletions(): Promise<RpcResult> {
   requireCachedConfig();
   const all = await getAllTasks();
   const diverged = selectCompletionDivergences(all);
+  const dueDiverged = selectDueDivergences(all);
   const results: Array<Record<string, unknown>> = [];
   for (const task of diverged) {
     try {
@@ -1036,11 +1047,85 @@ async function reconcileCompletions(): Promise<RpcResult> {
       });
     }
   }
+  for (const task of dueDiverged) {
+    try {
+      const decision = await reconcileDueForTask(task);
+      results.push({
+        taskId: task.id,
+        title: task.title,
+        action: decision.action,
+        reason: decision.reason,
+        ok: true,
+      });
+    } catch (e) {
+      results.push({
+        taskId: task.id,
+        title: task.title,
+        action: 'error',
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
   return {
     ok: true,
     checked: all.length,
     diverged: diverged.length,
+    dueDiverged: dueDiverged.length,
     results,
+  };
+}
+
+/**
+ * 单个任务的日期对账：
+ *   - 远端日期与同步基线一致（远端没变）→ 把本地 dueDay/dueWithTime 推上去；
+ *   - 远端日期已变化 → 跳过（交给轮询拉取，避免覆盖远端新值）。
+ * 只处理日期字段，不碰完成状态。
+ */
+async function reconcileDueForTask(
+  task: SpTask,
+): Promise<{ action: string; reason: string }> {
+  const config = requireCachedConfig();
+  const http = resolveHttp();
+  const issueId = task.issueId as string;
+  const updateIssue = issueProviderDefinition.updateIssue;
+  if (!updateIssue) throw new Error('updateIssue not implemented');
+
+  const fresh = await issueProviderDefinition.getById(issueId, config, http);
+  const lsv = (task.issueLastSyncedValues ?? {}) as Record<string, unknown>;
+  const normDay = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+  const normTime = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+
+  const freshDay = normDay(fresh.dueDate);
+  const freshTime = normTime(fresh.dueWithTime);
+  if (freshDay !== normDay(lsv['dueDate']) || freshTime !== normTime(lsv['dueWithTime'])) {
+    return { action: 'due-skip', reason: 'remote due changed; pull will reconcile' };
+  }
+
+  const localDay = normDay(task.dueDay);
+  const localTime = normTime(task.dueWithTime);
+  if (localTime !== null) {
+    await updateIssue(issueId, { dueWithTime: localTime }, config, http);
+  } else {
+    // localDay 为 null 时表示本地已清空日期：显式写 null 清除远端。
+    await updateIssue(issueId, { dueDate: localDay }, config, http);
+  }
+
+  const post = await issueProviderDefinition.getById(issueId, config, http);
+  await withHostDbRetry(() =>
+    PluginAPI.updateTask(task.id, {
+      issueLastSyncedValues: {
+        ...(task.issueLastSyncedValues ?? {}),
+        dueDate: normDay(post.dueDate),
+        dueWithTime: normTime(post.dueWithTime),
+      },
+      ...(typeof post.lastUpdated === 'number' ? { issueLastUpdated: post.lastUpdated } : {}),
+    }),
+  );
+  return {
+    action: 'due-push',
+    reason: localTime !== null ? 'pushed timed due' : 'pushed planned day',
   };
 }
 
