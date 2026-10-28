@@ -39,6 +39,8 @@ import {
   classifyLinkedTasks,
   COMPLETED_STATE,
   decideCompletionSync,
+  DELETED_STATE,
+  isDeleteSyncEnabled,
   filterIssuesByIds,
   findIssueProviderId,
   isMsTodoTask,
@@ -305,6 +307,20 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
       ],
     },
     {
+      key: 'keepRemoteDeletedTasks',
+      type: 'checkbox',
+      label: t({ zh: '保留远端已删除的任务', en: 'Keep tasks deleted in To Do' }),
+      description: t({
+        zh:
+          '默认不勾选：在 Microsoft To Do 里删除任务时，SP 里的对应任务也会被删除（约 5 分钟内生效；' +
+          '已记录时间的任务会先弹确认）。勾选后不删除本地任务，只保留链接，可在「链接体检」里手动解除。',
+        en:
+          'Unchecked by default: deleting a task in Microsoft To Do also deletes the linked SP task ' +
+          '(within ~5 minutes; tasks with tracked time ask first). Check to keep the local task and ' +
+          'only keep the link; unlink manually from Link health.',
+      }),
+    },
+    {
       key: 'clientIdHelp',
       type: 'link',
       label: t({
@@ -365,30 +381,7 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
     cacheContext(config, http);
     const { listId } = parseConfig(config);
     const token = await getToken(config, http);
-    let usedListId = knownIssueList(issueId) ?? listId;
-    const task = await graphRequest<TodoTask>(
-      'GET',
-      `/me/todo/lists/${usedListId}/tasks/${issueId}`,
-      token,
-      undefined,
-      http,
-    ).catch(async (e) => {
-      // 任务被挪到别的列表后，旧 listId 路径 404：定位真实列表再取一次。
-      if (!isNotFoundError(e)) throw e;
-      const actual = await findTaskList(issueId, token, http);
-      if (!actual) throw e;
-      usedListId = actual;
-      return graphRequest<TodoTask>(
-        'GET',
-        `/me/todo/lists/${actual}/tasks/${issueId}`,
-        token,
-        undefined,
-        http,
-      );
-    });
-    rememberIssueList(issueId, usedListId);
-    missingIssueCache.delete(issueId);
-    taskCache.remember(usedListId, task);
+    const { task } = await fetchTodoTask(issueId, listId, token, http);
     return mapTaskToIssue(task);
   },
 
@@ -396,10 +389,10 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
   // 「每个任务一次 GET」的串行循环——任务一多一轮跑不完，批次尾部会被下一次
   // timer/上下文切换取消，表现为「MS 端改了、SP 永远收不到」。
   //
-  // 实现要点（见 list-cache.ts）：只读进程内列表快照，缺失的 id 直接跳过，
-  // 绝不在这里逐个 404 探测。整批请求失败时也返回缓存，避免宿主 catch→[] 丢整批。
-  // 被挪到其它列表的任务由缓存跨列表取最新副本；彻底缺失（远端已删）由视图
-  // 「体检 / 对账」处理。
+  // 实现要点（见 list-cache.ts）：读进程内列表快照（整表每 5 分钟重建一次），
+  // 整批失败时返回缓存，避免宿主 catch→[] 丢整批。缺失的 id 不再无条件跳过：
+  // 快照可信时做有界确认探测——被挪到别的列表的按正常 issue 返回；确认 404 的
+  // 上报 `state='deleted'` 占位 issue，由宿主删除本地任务（deletedStates）。
   async getByIds(
     issueIds: string[],
     config: Record<string, unknown>,
@@ -411,14 +404,23 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
     try {
       const { listId } = parseConfig(config);
       const token = await getToken(config, http);
-      const { tasks } = await taskCache.getByIds(listId, ids, token, http);
+      const { tasks, missing, trustworthy } = await taskCache.getByIds(
+        listId,
+        ids,
+        token,
+        http,
+      );
       lifecycle(
-        `getByIds list=…${listId.slice(-8)} want=${ids.length} found=${tasks.length} missing=${ids.length - tasks.length}`,
+        `getByIds list=…${listId.slice(-8)} want=${ids.length} found=${tasks.length} missing=${missing.length} trustworthy=${trustworthy}`,
       );
       for (const task of tasks) {
         rememberIssueList(task.id, taskCache.listIdOf(task.id) ?? listId);
       }
-      return filterIssuesByIds(tasks, ids).map(mapTaskToIssue);
+      const issues = filterIssuesByIds(tasks, ids).map(mapTaskToIssue);
+      if (trustworthy && missing.length && isDeleteSyncEnabled(config)) {
+        issues.push(...(await confirmRemoteDeletions(missing, listId, token, http)));
+      }
+      return issues;
     } catch (e) {
       // 配置/令牌层面的错误：返回空而不是抛给宿主（抛错会让宿主把整批当失败）。
       lifecycle(
@@ -478,6 +480,10 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
   ],
 
   fieldMappings: FIELD_MAPPINGS,
+
+  // 远端已删除：getByIds 对确认 404 的 id 返回 state='deleted' 的占位 issue，
+  // 宿主据此走 `_handleRemoteDeletion`（删本地任务；有计时记录时先弹确认）。
+  deletedStates: [DELETED_STATE],
 
   async updateIssue(
     id: string,
@@ -681,6 +687,96 @@ function isNotFoundError(e: unknown): boolean {
  * 用于写路径的 404 自愈：任务被用户从配置列表挪走后，宿主按旧 listId 拼的路径会 404，
  * 这里兜底找到真实列表再重试。
  */
+/**
+ * 单条读取一个 To Do 任务（404 时跨列表定位），并把结果写入列表快照，
+ * 供 getById 与删除确认探测共用。
+ */
+async function fetchTodoTask(
+  issueId: string,
+  listId: string,
+  token: string,
+  http: PluginHttp,
+): Promise<{ task: TodoTask; listId: string }> {
+  let usedListId = knownIssueList(issueId) ?? listId;
+  const task = await graphRequest<TodoTask>(
+    'GET',
+    `/me/todo/lists/${usedListId}/tasks/${issueId}`,
+    token,
+    undefined,
+    http,
+  ).catch(async (e) => {
+    // 任务被挪到别的列表后，旧 listId 路径 404：定位真实列表再取一次。
+    if (!isNotFoundError(e)) throw e;
+    const actual = await findTaskList(issueId, token, http);
+    if (!actual) throw e;
+    usedListId = actual;
+    return graphRequest<TodoTask>(
+      'GET',
+      `/me/todo/lists/${actual}/tasks/${issueId}`,
+      token,
+      undefined,
+      http,
+    );
+  });
+  rememberIssueList(issueId, usedListId);
+  missingIssueCache.delete(issueId);
+  taskCache.remember(usedListId, task);
+  return { task, listId: usedListId };
+}
+
+/** 单轮最多确认多少个远端删除：坏快照时避免一次误删一大批。 */
+const MAX_DELETION_PROBES_PER_CYCLE = 5;
+
+/** 占位 issue：只用于把“远端已删除”告诉宿主（provider 上声明了 deletedStates）。 */
+function deletedIssue(id: string): PluginIssue {
+  return {
+    id,
+    title: '',
+    body: '',
+    url: TODO_WEB_URL,
+    state: DELETED_STATE,
+    lastUpdated: 0,
+  };
+}
+
+/**
+ * 对快照里缺失的 id 做有界确认：
+ *   - 10 分钟内已确认缺失的 → 本轮不再上报（宿主的删除/警告已在上一轮发出）；
+ *   - getById 成功 → 任务只是被移到别的列表，按正常 issue 返回（并写入缓存）；
+ *   - 404（含跨列表探测）→ 确认远端已删，上报 deleted 占位 issue；
+ *   - 其它错误（429/网络）→ 什么都不做，绝不当作删除。
+ */
+async function confirmRemoteDeletions(
+  missing: string[],
+  listId: string,
+  token: string,
+  http: PluginHttp,
+): Promise<PluginIssue[]> {
+  const issues: PluginIssue[] = [];
+  let probes = 0;
+  for (const id of missing) {
+    if (isRecentlyMissing(id)) continue;
+    if (probes >= MAX_DELETION_PROBES_PER_CYCLE) break;
+    probes++;
+    try {
+      const { task } = await fetchTodoTask(id, listId, token, http);
+      issues.push(mapTaskToIssue(task));
+    } catch (e) {
+      if (!isNotFoundError(e)) {
+        lifecycle(
+          `deletion probe failed for ${id}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        continue;
+      }
+      rememberMissing(id);
+      taskCache.forget(id);
+      lifecycle(`remote deletion confirmed: ${id}`);
+      issues.push(deletedIssue(id));
+    }
+  }
+  return issues;
+}
+
 async function findTaskList(
   issueId: string,
   token: string,
