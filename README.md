@@ -202,33 +202,28 @@ You can trigger the sync two ways:
 > `registerMenuEntry ok`. If the version is old or those lines are missing, re-install
 > the ZIP on that device.
 
-The view is split into five functional tabs:
+The view (redesigned in v0.2.0) is organised as *status first, issues next, actions last*:
 
-- **Push**: lists **unsynced** local tasks (auto-create failures with no `issueId`), each
-  showing title / project / tags / notes / due date & time. You can **multi-select** and press
-  "Push selected" for a batch push, or push a single row. Pushing POSTs the task (title /
-  notes / due date & time / completion status) to the configured To Do list and writes back
-  the `issueId` to complete the link — **no need to select an SP task first** (fixing the old
-  "please select…" false report).
-- **Linked**: the plugin's currently-synced tasks; the `MS id` is truncated with an ellipsis
-  and shown in full on hover.
-- **Dead links**: click "Scan" to GET each locally-linked task in the current project and list
-  the ones that no longer exist in To Do. Delete those local tasks to stop the recurring 404.
-- **Reconcile**: scan every linked task for a **completion divergence** (local `isDone` vs the
-  last synced baseline `issueLastSyncedValues.state`) and fix each one: remote completed →
-  tick locally; local completed → push `completed`; both completed → rewrite the baseline only.
-  It also scans **due-date divergences** (local `dueDay`/`dueWithTime` vs the baseline): when
-  the remote date is unchanged the local date is pushed, otherwise the row is skipped so the
-  poll can pull the remote value. The legacy gap ("local date only, To Do has a reminder
-  time", caused by the pre-0.1.10 mapping reading timed due dates as date-only) is healed the
-  other way round — the remote time is pulled into the local task (`due-pull`), never the
-  other way, because To Do owns the time. Only a genuine "user removed the time" (baseline
-  date and reminder on different days) clears the remote reminder (`due-push`). Each row
-  shows the action taken and any error, so missed
-  pushes, edits synced from another device, and stale baselines can be repaired without
-  waiting for the next poll.
-- **Cleanup**: browse To Do tasks per list with inline actions — unlink already-linked tasks
-  (back to Push), or delete the remote task for unlinked ones (with a confirmation step).
+- **Overview**: sync health at a glance — project / current list / **last sync signal** (most
+  recent To Do interaction plus a relative time), and four clickable tiles: **pushable**,
+  **completion divergences**, **due divergences**, **dead / mismatched links** (`—` before a
+  scan). "Sync all pushable" batch-pushes the current project's unlinked tasks after a
+  **two-step confirmation** and is disabled when the project cannot be resolved (so it can
+  never push the whole workspace); a progress bar animates during the batch. Buttons for
+  rescans and link checks live here too.
+- **Issues**: the old Reconcile and Dead-links tabs merged into one page, grouped by kind —
+  completion divergences, due divergences, link problems (the scan GETs every linked task),
+  and the last repair result. Every divergence row has **Fix** (per-row push / baseline
+  rewrite) and **Unlink** (the safe exit when the remote task is gone); the top button runs
+  the full reconcile. Failures are explained in the log, and a 404 tells you the remote task
+  no longer exists and offers Unlink.
+- **Push**: a segmented control switches between *pushable* and *linked*. Pushable rows show
+  title / project / tags / notes / due date; select rows or push one at a time; pushing POSTs
+  the task and writes back `issueId`.
+- **Lists**: browse To Do tasks per list with inline actions — unlink linked tasks, or delete
+  unlinked remote tasks (with confirmation).
+- The log lives in a collapsible panel; rows, tiles and buttons have transition feedback and
+  the layout tightens below 430px.
 - The status bar shows the **human-readable list name / project name / task count**; when not
   connected or no list is chosen it shows setup guidance; the bottom **log** prints the result
   of every action inline.
