@@ -253,6 +253,34 @@ export function isLegacyTimedBaselineGap(
   return localDayOf(baselineTime) === baselineDay;
 }
 
+/** 概览页用的同步概况（纯函数，便于单测）。 */
+export interface SyncSummary {
+  linked: number;
+  completionDiverged: number;
+  dueDiverged: number;
+  /** 已链接任务里最近一次与 To Do 交互的时间（拉取或推送成功后宿主写入）。 */
+  lastSyncAt: number | null;
+}
+
+export function summarizeSyncState(tasks: SpTask[]): SyncSummary {
+  let lastSyncAt: number | null = null;
+  let linked = 0;
+  for (const task of tasks) {
+    if (!isMsTodoTask(task) || !task.issueId) continue;
+    linked++;
+    const updated = task.issueLastUpdated;
+    if (typeof updated === 'number' && Number.isFinite(updated)) {
+      if (lastSyncAt === null || updated > lastSyncAt) lastSyncAt = updated;
+    }
+  }
+  return {
+    linked,
+    completionDiverged: selectCompletionDivergences(tasks).length,
+    dueDiverged: selectDueDivergences(tasks).length,
+    lastSyncAt,
+  };
+}
+
 /** 把已完成状态写进同步基线（保留其它已同步字段）。 */
 export function withCompletedBaseline(
   baseline: Record<string, unknown> | undefined,

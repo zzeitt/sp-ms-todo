@@ -156,6 +156,65 @@
     .log .ok { color: var(--success); }
     .log .warn { color: var(--warn); }
     .log .dim { color: var(--muted); }
+
+    /* ---- 概览 / 异常（v0.2.0） ---- */
+    .hero {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      padding: 14px; margin-bottom: 12px;
+    }
+    .hero .grid3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .hero .k { font-size: 12px; color: var(--muted); }
+    .hero .v { font-size: 14px; font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+
+    .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .tile {
+      background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+      padding: 12px; cursor: pointer; transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .tile:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+    .tile:active { transform: scale(.985); }
+    .tile .num { font-size: 24px; font-weight: 700; line-height: 1.1; transition: color .2s; }
+    .tile .lbl { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .tile.warn .num { color: var(--warn); }
+    .tile.bad .num { color: var(--danger); }
+    .tile.ok .num { color: var(--success); }
+
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+
+    .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .seg button {
+      appearance: none; border: 0; background: var(--card); color: var(--muted);
+      padding: 6px 14px; font-size: 13px; cursor: pointer; transition: background .15s, color .15s;
+    }
+    .seg button.active { background: var(--accent); color: var(--accent-fg); }
+
+    .progress { height: 6px; background: var(--line); border-radius: 999px; overflow: hidden; margin: 10px 0 0; display: none; }
+    .progress.on { display: block; }
+    .progress > i {
+      display: block; height: 100%; width: 34%; background: var(--accent); border-radius: inherit;
+      animation: slide 1.1s ease-in-out infinite;
+    }
+    @keyframes slide { 0% { transform: translateX(-110%); } 100% { transform: translateX(320%); } }
+
+    .section { margin: 16px 0 8px; display: flex; align-items: baseline; gap: 8px; }
+    .section h2 { font-size: 13px; margin: 0; }
+    .section .count { margin-left: auto; }
+
+    .row { animation: fadein .18s ease-out; }
+    @keyframes fadein { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+
+    details.logbox { margin-top: 18px; }
+    details.logbox summary {
+      cursor: pointer; color: var(--muted); font-size: 12px; text-transform: uppercase;
+      letter-spacing: .04em; margin-bottom: 6px; user-select: none;
+    }
+    details.logbox .loghead { margin: 4px 0 6px; }
+
+    @media (max-width: 430px) {
+      .tile .num { font-size: 20px; }
+      nav.tabs button { padding: 8px 10px; font-size: 13px; }
+      .wrap { padding: 12px 12px 20px; }
+    }
   </style>
 </head>
 <body>
@@ -172,46 +231,73 @@
     <div class="chips" id="listFilter" style="margin:0 0 12px"></div>
 
     <nav class="tabs">
-      <button data-tab="push" class="active">推送 · Push</button>
-      <button data-tab="linked">已链接 · Linked</button>
-      <button data-tab="dead">链接体检 · Link health</button>
-      <button data-tab="reconcile">对账 · Reconcile</button>
-      <button data-tab="lists">清理 · Cleanup</button>
+      <button data-tab="overview" class="active">概览 · Overview</button>
+      <button data-tab="issues">异常 · Issues</button>
+      <button data-tab="push">推送 · Push</button>
+      <button data-tab="lists">列表 · Lists</button>
     </nav>
 
-    <section id="tab-push" class="tab active">
-      <div class="toolbar">
-        <input type="text" id="pushQuery" placeholder="搜索标题 / 项目 / 标签 / 备注…" />
-        <span class="count" id="pushCount"></span>
-        <button class="btn small" id="btnSelectAll">全选 / Select all</button>
-        <button class="btn primary small" id="btnPushSelected" disabled>推送选中 (0)</button>
+    <section id="tab-overview" class="tab active">
+      <div class="hero">
+        <div class="grid3">
+          <div><div class="k">项目</div><div class="v" id="ovProject">—</div></div>
+          <div><div class="k">To Do 列表</div><div class="v" id="ovList">—</div></div>
+          <div><div class="k">最近同步信号</div><div class="v" id="ovLastSync">—</div></div>
+        </div>
       </div>
-      <div class="list" id="pushList"></div>
+      <div class="tiles">
+        <div class="tile" id="tilePushable" role="button" tabindex="0"><div class="num" id="ovPushable">—</div><div class="lbl">待推送</div></div>
+        <div class="tile" id="tileCompletion" role="button" tabindex="0"><div class="num" id="ovCompletion">—</div><div class="lbl">完成状态分叉</div></div>
+        <div class="tile" id="tileDue" role="button" tabindex="0"><div class="num" id="ovDue">—</div><div class="lbl">日期分叉</div></div>
+        <div class="tile" id="tileDead" role="button" tabindex="0"><div class="num" id="ovDead">—</div><div class="lbl">失效 / 列表不一致</div></div>
+      </div>
+      <div class="hero-actions">
+        <button class="btn primary" id="btnSyncAll">同步全部待推送</button>
+        <button class="btn" id="btnScanDiv">重新扫描分叉</button>
+        <button class="btn" id="btnScanLinks">检测链接</button>
+      </div>
+      <div class="progress" id="pushProgress"><i></i></div>
+      <p class="meta" id="ovHint">只读统计。分叉 = 本地状态与上次同步基线不一致；点数字可跳到「异常」逐条处理。</p>
     </section>
 
-    <section id="tab-linked" class="tab">
+    <section id="tab-issues" class="tab">
       <div class="toolbar">
-        <input type="text" id="linkedQuery" placeholder="搜索标题 / 项目 / 标签 / 备注…" />
-        <span class="count" id="linkedCount"></span>
+        <button class="btn primary small" id="btnReconcile">全部修复</button>
+        <button class="btn small" id="btnScan">检测链接</button>
+        <span class="count" id="scanHint">分叉只读统计自动加载；链接检测会全量 GET 已链接任务（较慢）。</span>
       </div>
-      <div class="list" id="linkedList"></div>
+      <div class="section"><h2>完成状态分叉</h2><span class="count" id="compCount"></span></div>
+      <div class="list" id="compList"><div class="empty">正在扫描…</div></div>
+      <div class="section"><h2>日期分叉</h2><span class="count" id="dueCount"></span></div>
+      <div class="list" id="dueList"><div class="empty">正在扫描…</div></div>
+      <div class="section"><h2>链接异常</h2><span class="count" id="deadCount"></span></div>
+      <div class="list" id="deadList"><div class="empty">点「检测链接」全量校验：找出已删除的（失效）与被挪到别的列表的（列表不一致）。</div></div>
+      <div class="section"><h2>最近一次修复结果</h2></div>
+      <div class="list" id="reconcileList"><div class="empty">尚未执行。</div></div>
     </section>
 
-    <section id="tab-dead" class="tab">
+    <section id="tab-push" class="tab">
       <div class="toolbar">
-        <button class="btn primary" id="btnScan">开始检测 / Scan</button>
-        <span class="count" id="scanHint">全量校验已链接任务：找出已删除的（失效）与被挪到别的列表的（列表不一致）。</span>
+        <div class="seg" id="pushSeg">
+          <button id="segPush" class="active">待推送</button>
+          <button id="segLinked">已链接</button>
+        </div>
       </div>
-      <div class="list" id="deadList"></div>
-    </section>
-
-    <section id="tab-reconcile" class="tab">
-      <div class="toolbar">
-        <button class="btn primary" id="btnReconcile">扫描并修复完成状态 / Reconcile</button>
-        <span class="count" id="reconcileHint">比对本地打勾状态与上次同步基线：远端已完成 → 本地打勾；本地已完成 → 推送 completed；两边一致时只回写基线。逐条显示结果与错误。</span>
+      <div id="pushPane">
+        <div class="toolbar">
+          <input type="text" id="pushQuery" placeholder="搜索标题 / 项目 / 标签 / 备注…" />
+          <span class="count" id="pushCount"></span>
+          <button class="btn small" id="btnSelectAll">全选 / Select all</button>
+          <button class="btn primary small" id="btnPushSelected" disabled>推送选中 (0)</button>
+        </div>
+        <div class="list" id="pushList"></div>
       </div>
-      <div class="list" id="reconcileList">
-        <div class="empty">尚未对账。</div>
+      <div id="linkedPane" style="display:none">
+        <div class="toolbar">
+          <input type="text" id="linkedQuery" placeholder="搜索标题 / 项目 / 标签 / 备注…" />
+          <span class="count" id="linkedCount"></span>
+        </div>
+        <div class="list" id="linkedList"></div>
       </div>
     </section>
 
@@ -223,11 +309,14 @@
       <div id="listsList"></div>
     </section>
 
-    <div class="loghead">
-      <h2>日志 · Log</h2>
-      <button class="btn small" id="btnClearLog">清空 / Clear</button>
-    </div>
-    <div id="log" class="log"><div class="line dim">就绪。</div></div>
+    <details class="logbox" open>
+      <summary>日志 · Log</summary>
+      <div class="loghead">
+        <span class="count">最近 200 行</span>
+        <button class="btn small" id="btnClearLog">清空 / Clear</button>
+      </div>
+      <div id="log" class="log"><div class="line dim">就绪。</div></div>
+    </details>
   </div>
 
   <script>
@@ -253,6 +342,33 @@
       var reconcileListEl = document.getElementById('reconcileList');
       var btnToggleLists = document.getElementById('btnToggleLists');
       var btnRefresh = document.getElementById('btnRefresh');
+
+      // 概览 / 异常（v0.2.0）
+      var ovProjectEl = document.getElementById('ovProject');
+      var ovListEl = document.getElementById('ovList');
+      var ovLastSyncEl = document.getElementById('ovLastSync');
+      var ovPushableEl = document.getElementById('ovPushable');
+      var ovCompletionEl = document.getElementById('ovCompletion');
+      var ovDueEl = document.getElementById('ovDue');
+      var ovDeadEl = document.getElementById('ovDead');
+      var tilePushable = document.getElementById('tilePushable');
+      var tileCompletion = document.getElementById('tileCompletion');
+      var tileDue = document.getElementById('tileDue');
+      var tileDead = document.getElementById('tileDead');
+      var btnSyncAll = document.getElementById('btnSyncAll');
+      var btnScanDiv = document.getElementById('btnScanDiv');
+      var btnScanLinks = document.getElementById('btnScanLinks');
+      var pushProgress = document.getElementById('pushProgress');
+      var compListEl = document.getElementById('compList');
+      var dueListEl = document.getElementById('dueList');
+      var compCountEl = document.getElementById('compCount');
+      var dueCountEl = document.getElementById('dueCount');
+      var deadCountEl = document.getElementById('deadCount');
+      var segPush = document.getElementById('segPush');
+      var segLinked = document.getElementById('segLinked');
+      var pushPane = document.getElementById('pushPane');
+      var linkedPane = document.getElementById('linkedPane');
+
       var msgCounter = 0;
 
       var state = null;      // 最近一次 status 快照
@@ -267,6 +383,9 @@
       var pushTargetChoice = {};  // 待推送任务 taskId → 目标列表 id（逐任务下拉）
       var listActing = {};        // 列表页操作进行中（SP taskId 或 MS taskId → true）
       var deleteConfirm = {};     // 列表页 MS taskId → true：等待二次确认「删除」
+      var divergences = null;     // 最近一次分叉扫描结果（只读）
+      var fixing = {};            // taskId → true：正在修复该分叉
+      var syncAllArmed = false;   // 「同步全部」二次确认状态
 
       function log(msg, cls) {
         var div = document.createElement('div');
@@ -633,6 +752,9 @@
 
       function renderDead(result) {
         if (result) lastScanResult = result;
+        var _deadN = lastScanResult ? ((lastScanResult.dead || []).length + (lastScanResult.mismatched || []).length) : null;
+        if (deadCountEl) deadCountEl.textContent = _deadN === null ? '' : _deadN + ' 个';
+        renderOverview();
         if (!result) {
           deadListEl.innerHTML = '<div class="empty">尚未检测。</div>';
           return;
@@ -855,6 +977,7 @@
             renderPush();
             renderLinked();
             renderLists();
+            renderOverview();
             log('状态已更新（插件 v' + (s.version || '?') + '）：可推送 ' + (s.pushable ? s.pushable.length : 0) + ' 个，已链接 ' + (s.linked ? s.linked.length : 0) + ' 个。');
           } else {
             log('状态读取失败：' + (s && s.error ? s.error : '未知错误'), 'err');
@@ -1147,6 +1270,212 @@
         });
       }
 
+      // ---- 概览 / 异常（v0.2.0） ----
+
+      function fmtAgo(ms) {
+        if (!ms) return '';
+        var diff = Date.now() - ms;
+        if (diff < 0) diff = 0;
+        var min = Math.floor(diff / 60000);
+        if (min < 1) return '刚刚';
+        if (min < 60) return min + ' 分钟前';
+        var hr = Math.floor(min / 60);
+        if (hr < 24) return hr + ' 小时前';
+        return Math.floor(hr / 24) + ' 天前';
+      }
+
+      function renderOverview() {
+        var s = state;
+        ovProjectEl.textContent = (s && s.projectName) || '（未识别项目）';
+        ovListEl.textContent = (s && (s.listName || s.listId)) || '（未选择列表）';
+        var sum = (s && s.summary) || {};
+        ovLastSyncEl.textContent = sum.lastSyncAt ? fmtTime(sum.lastSyncAt) + '（' + fmtAgo(sum.lastSyncAt) + '）' : '—';
+
+        var pushable = s && s.pushable ? s.pushable.length : 0;
+        ovPushableEl.textContent = String(pushable);
+        ovPushableEl.parentNode.className = 'tile' + (pushable ? ' warn' : ' ok');
+        // 未识别项目时待推送 = 全工作区的未链接任务；此时禁止「同步全部」，避免误推几百条。
+        btnSyncAll.disabled = !(s && s.projectId);
+
+        var comp = divergences ? divergences.completion.length : (sum.completionDiverged || 0);
+        var due = divergences ? divergences.due.length : (sum.dueDiverged || 0);
+        ovCompletionEl.textContent = String(comp);
+        ovCompletionEl.parentNode.className = 'tile' + (comp ? ' bad' : ' ok');
+        ovDueEl.textContent = String(due);
+        ovDueEl.parentNode.className = 'tile' + (due ? ' warn' : ' ok');
+
+        var dead = lastScanResult
+          ? (lastScanResult.dead || []).length + (lastScanResult.mismatched || []).length
+          : null;
+        ovDeadEl.textContent = dead === null ? '—' : String(dead);
+        ovDeadEl.parentNode.className = 'tile' + (dead === null ? '' : (dead ? ' bad' : ' ok'));
+      }
+
+      function divergenceRow(d, kind) {
+        var row = document.createElement('div');
+        row.className = 'row';
+        var body = document.createElement('div');
+        body.className = 'body';
+        var title = document.createElement('div');
+        title.className = 'title';
+        title.textContent = d.title;
+        body.appendChild(title);
+        var sub = document.createElement('div');
+        sub.className = 'sub';
+        if (kind === 'completion') {
+          sub.textContent = '本地 ' + (d.isDone ? '已完成' : '未完成') +
+            ' · 基线 ' + (d.baselineState === 'completed' ? '已完成' : '未完成') +
+            (d.projectName ? ' · ' + d.projectName : '');
+        } else {
+          var local = d.dueDay || (typeof d.dueWithTime === 'number' ? fmtTime(d.dueWithTime) : '（无日期）');
+          var base = d.baselineDueDate || (typeof d.baselineDueWithTime === 'number' ? fmtTime(d.baselineDueWithTime) : '（无日期）');
+          sub.textContent = '本地 ' + local + ' · 基线 ' + base + (d.projectName ? ' · ' + d.projectName : '');
+        }
+        body.appendChild(sub);
+        var actions = document.createElement('div');
+        actions.className = 'actions';
+        var btn = document.createElement('button');
+        btn.className = 'btn small primary';
+        btn.textContent = fixing[d.taskId] ? '修复中…' : '修复';
+        btn.disabled = !!fixing[d.taskId];
+        btn.addEventListener('click', function () { fixOne(d.taskId); });
+        actions.appendChild(btn);
+        // 远端已删除 / 链接错位时，修复必然失败；解除链接是安全出口。
+        var un = document.createElement('button');
+        un.className = 'btn small';
+        un.textContent = fixing['unlink:' + d.taskId] ? '解除中…' : '解除链接';
+        un.title = '清除该任务的 MS 链接，恢复为本地任务（远端已删除时用）';
+        un.disabled = !!fixing['unlink:' + d.taskId];
+        un.addEventListener('click', function () { unlinkFromIssue(d.taskId); });
+        actions.appendChild(un);
+        row.appendChild(body);
+        row.appendChild(actions);
+        return row;
+      }
+
+      function unlinkFromIssue(taskId) {
+        if (fixing['unlink:' + taskId]) return;
+        fixing['unlink:' + taskId] = true;
+        renderIssues();
+        rpc({ op: 'unlink', taskId: taskId }).then(function (r) {
+          if (r && r.ok) {
+            log('✓ 已解除链接：' + (r.title || taskId) + '（本地任务保留，可在「推送」里重新推送）。', 'ok');
+          } else {
+            log('✗ 解除链接失败：' + (r && r.error ? r.error : '未知错误'), 'err');
+          }
+        }).catch(function (e) {
+          log('解除链接异常：' + e.message, 'err');
+        }).then(function () {
+          fixing['unlink:' + taskId] = false;
+          return Promise.all([loadStatus(), loadDivergences()]);
+        });
+      }
+
+      function renderIssues() {
+        if (!divergences) return;
+        compCountEl.textContent = divergences.completion.length + ' 个';
+        dueCountEl.textContent = divergences.due.length + ' 个';
+        compListEl.innerHTML = '';
+        if (!divergences.completion.length) {
+          compListEl.innerHTML = '<div class="empty">没有完成状态分叉。</div>';
+        } else {
+          divergences.completion.forEach(function (d) { compListEl.appendChild(divergenceRow(d, 'completion')); });
+        }
+        dueListEl.innerHTML = '';
+        if (!divergences.due.length) {
+          dueListEl.innerHTML = '<div class="empty">没有日期分叉。</div>';
+        } else {
+          divergences.due.forEach(function (d) { dueListEl.appendChild(divergenceRow(d, 'due')); });
+        }
+        renderOverview();
+      }
+
+      function loadDivergences() {
+        compCountEl.textContent = '扫描中…';
+        dueCountEl.textContent = '扫描中…';
+        return rpc({ op: 'divergences' }).then(function (r) {
+          if (!r || !r.ok) {
+            compListEl.innerHTML = '<div class="empty">扫描失败：' + esc(r && r.error ? r.error : '未知错误') + '</div>';
+            dueListEl.innerHTML = '';
+            return;
+          }
+          divergences = r;
+          renderIssues();
+          var n = r.completion.length + r.due.length;
+          log('分叉扫描：完成 ' + r.completion.length + ' 个，日期 ' + r.due.length + ' 个。', n ? 'warn' : 'ok');
+        }).catch(function (e) {
+          log('分叉扫描异常：' + e.message, 'err');
+        });
+      }
+
+      function fixOne(taskId) {
+        if (fixing[taskId]) return;
+        fixing[taskId] = true;
+        renderIssues();
+        log('修复分叉 ' + taskId + ' …', 'dim');
+        rpc({ op: 'pushTask', taskId: taskId }).then(function (r) {
+          if (r && r.ok) {
+            var acts = (r.results || []).map(function (x) { return x.action; });
+            log('✓ 已修复：' + (r.title || taskId) + '（' + (acts.length ? acts.join(',') : '已一致，无需改动') + '）', 'ok');
+          } else {
+            var why = r && r.error ? r.error : '未知错误';
+            log('✗ 修复失败：' + why, 'err');
+            if (/ErrorItemNotFound|does not contain a Task|not found/i.test(why)) {
+              log('该任务在 To Do 里已不存在（或被移除）：点这一行的「解除链接」可保留本地任务并清除失效链接。', 'warn');
+            }
+          }
+        }).catch(function (e) {
+          log('修复异常：' + e.message, 'err');
+        }).then(function () {
+          fixing[taskId] = false;
+          return Promise.all([loadStatus(), loadDivergences()]);
+        });
+      }
+
+      function syncAll() {
+        if (!state || !state.projectId) {
+          log('未识别当前项目：请从「项目 → 插件视图」进入后再批量推送，避免把整个工作区的任务推上去。', 'warn');
+          return;
+        }
+        if (!state.pushable || !state.pushable.length) {
+          log('没有待推送任务。', 'dim');
+          return;
+        }
+        if (!syncAllArmed) {
+          syncAllArmed = true;
+          btnSyncAll.textContent = '确认同步 ' + state.pushable.length + ' 个？';
+          log('再次点击以把 ' + state.pushable.length + ' 个任务推到对应列表（5 秒内有效）。', 'warn');
+          setTimeout(function () {
+            if (!syncAllArmed) return;
+            syncAllArmed = false;
+            btnSyncAll.textContent = '同步全部待推送';
+          }, 5000);
+          return;
+        }
+        syncAllArmed = false;
+        btnSyncAll.textContent = '同步全部待推送';
+        var ids = state.pushable.map(function (t) { return t.id; });
+        pushProgress.classList.add('on');
+        log('批量推送 ' + ids.length + ' 个任务…', 'dim');
+        rpc({ op: 'forceSync', taskIds: ids }).then(function (r) {
+          reportPushResult(r);
+        }).catch(function (e) {
+          log('推送异常：' + e.message, 'err');
+        }).then(function () {
+          pushProgress.classList.remove('on');
+          return Promise.all([loadStatus(), loadDivergences()]);
+        });
+      }
+
+      function setPushPane(which) {
+        var linked = which === 'linked';
+        segPush.classList.toggle('active', !linked);
+        segLinked.classList.toggle('active', linked);
+        pushPane.style.display = linked ? 'none' : '';
+        linkedPane.style.display = linked ? '' : 'none';
+        if (linked) renderLinked(); else renderPush();
+      }
+
       function switchTab(name) {
         var tabs = document.querySelectorAll('nav.tabs button');
         for (var i = 0; i < tabs.length; i++) {
@@ -1156,11 +1485,24 @@
         for (var j = 0; j < sections.length; j++) {
           sections[j].classList.toggle('active', sections[j].id === 'tab-' + name);
         }
+        if (name === 'overview') renderOverview();
+        if (name === 'issues' && !divergences) loadDivergences();
+        if (name === 'push') setPushPane(segLinked.classList.contains('active') ? 'linked' : 'push');
       }
 
       // ---- 事件 ----
 
       btnRefresh.addEventListener('click', loadStatus);
+      btnSyncAll.addEventListener('click', syncAll);
+      btnScanDiv.addEventListener('click', loadDivergences);
+      btnScanLinks.addEventListener('click', scan);
+      segPush.addEventListener('click', function () { setPushPane('push'); });
+      segLinked.addEventListener('click', function () { setPushPane('linked'); });
+      // 概览的数字卡片：待推送 → 推送页；其余 → 异常页。
+      tilePushable.addEventListener('click', function () { switchTab('push'); });
+      tileCompletion.addEventListener('click', function () { switchTab('issues'); });
+      tileDue.addEventListener('click', function () { switchTab('issues'); });
+      tileDead.addEventListener('click', function () { switchTab('issues'); });
       btnPushSelected.addEventListener('click', pushSelected);
       btnScan.addEventListener('click', scan);
       btnReconcile.addEventListener('click', reconcile);
@@ -1182,7 +1524,9 @@
         b.addEventListener('click', function () { switchTab(b.getAttribute('data-tab')); });
       });
 
-      loadStatus();
+      loadStatus().then(function () {
+        return loadDivergences();
+      });
     })();
   </script>
 </body>

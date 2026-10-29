@@ -54,6 +54,7 @@ import {
   selectLinkedMsTasks,
   selectTasksToSync,
   shouldPushCompletionOnUpdate,
+  summarizeSyncState,
   withCompletedBaseline,
 } from './force-sync';
 import {
@@ -1202,6 +1203,51 @@ async function reconcileDueForTask(
   };
 }
 
+/** 概览/异常页用的分叉快照（只读，不做任何写操作）。 */
+function decorateDivergence(
+  task: SpTask,
+  projectById: Map<string, string>,
+  kind: 'completion' | 'due',
+): Record<string, unknown> {
+  const lsv = (task.issueLastSyncedValues ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  return {
+    taskId: task.id,
+    title: task.title,
+    kind,
+    projectId: task.projectId ?? null,
+    projectName: task.projectId ? (projectById.get(task.projectId) ?? null) : null,
+    isDone: !!task.isDone,
+    dueDay: str(task.dueDay),
+    dueWithTime: num(task.dueWithTime),
+    baselineState: str(lsv['state']),
+    baselineDueDate: str(lsv['dueDate']),
+    baselineDueWithTime: num(lsv['dueWithTime']),
+  };
+}
+
+async function listDivergences(): Promise<RpcResult> {
+  const [all, projects, projectId] = await Promise.all([
+    getAllTasks(),
+    safeGetAllProjects(),
+    currentProjectId(),
+  ]);
+  const projectById = new Map(projects.map((p) => [p.id, p.title] as const));
+  const scoped = projectId ? all.filter((task) => task.projectId === projectId) : all;
+  return {
+    ok: true,
+    projectId: projectId ?? null,
+    projectName: projectId ? (projectById.get(projectId) ?? null) : null,
+    completion: selectCompletionDivergences(scoped).map((task) =>
+      decorateDivergence(task, projectById, 'completion'),
+    ),
+    due: selectDueDivergences(scoped).map((task) => decorateDivergence(task, projectById, 'due')),
+    scannedAt: Date.now(),
+  };
+}
+
 /** 单任务补推：完成态 + 计划日期各查一次分叉，有分叉就补推（视图/RPC 用）。 */
 async function pushTaskDivergence(taskId: string): Promise<RpcResult> {
   const config = await resolveConfig();
@@ -1457,6 +1503,7 @@ async function getSyncStatus(): Promise<RpcResult> {
     projectId: projectId ?? null,
     projectName: projectName ?? null,
     totalTasks: all.length,
+    summary: summarizeSyncState(scoped),
     linked,
     pushable,
     lists,
@@ -2026,6 +2073,8 @@ if (typeof PluginAPI.onMessage === 'function') {
             return await reconcileCompletions();
           case 'pushTask':
             return await pushTaskDivergence(String(msg.taskId ?? ''));
+          case 'divergences':
+            return await listDivergences();
           case 'unlink':
             return await unlinkTask(String(msg.taskId ?? ''));
           case 'recreateLink':
