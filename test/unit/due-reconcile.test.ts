@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { selectDueDivergences } from '../../src/force-sync';
+import { isLegacyTimedBaselineGap, selectDueDivergences } from '../../src/force-sync';
 import type { SpTask } from '../../src/types';
 
 const task = (over: Partial<SpTask> = {}): SpTask => ({
@@ -49,7 +49,7 @@ describe('selectDueDivergences（日期对账）', () => {
     expect(selectDueDivergences([t])).toEqual([]);
   });
 
-  it('基线带时刻、本地同一日期只剩纯日期 → 旧版本映射缺口，不入选', () => {
+  it('基线带时刻、本地同一日期只剩纯日期 → 入选（按 MS 时间补回本地）', () => {
     const t = task({
       dueDay: '2026-11-07',
       issueLastSyncedValues: {
@@ -57,7 +57,15 @@ describe('selectDueDivergences（日期对账）', () => {
         dueWithTime: new Date(2026, 10, 7, 9, 33).getTime(),
       },
     });
-    expect(selectDueDivergences([t])).toEqual([]);
+    expect(selectDueDivergences([t]).map((x) => x.id)).toEqual(['t1']);
+  });
+
+  it('缺口判据要求基线自洽：日期与提醒时刻同一天才算遗留缺口', () => {
+    const time = new Date(2026, 10, 7, 9, 33).getTime();
+    expect(isLegacyTimedBaselineGap('2026-11-07', null, '2026-11-07', time)).toBe(true);
+    expect(isLegacyTimedBaselineGap('2026-11-08', null, '2026-11-07', time)).toBe(false);
+    expect(isLegacyTimedBaselineGap('2026-11-07', null, null, time)).toBe(false);
+    expect(isLegacyTimedBaselineGap('2026-11-07', time, '2026-11-07', null)).toBe(false);
   });
 
   it('基线只有旧版 UTC 午夜时刻、本地同一日期 → 不入选', () => {
@@ -66,6 +74,17 @@ describe('selectDueDivergences（日期对账）', () => {
       issueLastSyncedValues: { dueWithTime: new Date(2026, 7, 15, 0, 0).getTime() },
     });
     expect(selectDueDivergences([t])).toEqual([]);
+  });
+
+  it('基线日期与提醒时刻不在同一天（用户清掉时刻）→ 入选，需要清远端提醒', () => {
+    const t = task({
+      dueDay: '2026-10-30',
+      issueLastSyncedValues: {
+        dueDate: '2026-10-30',
+        dueWithTime: new Date(2026, 9, 29, 20, 0).getTime(),
+      },
+    });
+    expect(selectDueDivergences([t]).map((x) => x.id)).toEqual(['t1']);
   });
 
   it('两边时刻相同、基线多出派生 dueDate → 不入选', () => {

@@ -1103,6 +1103,7 @@
               : x.action === 'pull' ? '已在本地打勾'
               : x.action === 'baseline-only' ? '远端已完成，仅回写基线'
               : x.action === 'due-push' ? '已推送计划日期到 MS'
+              : x.action === 'due-pull' ? '已从 MS 补回提醒时刻到本地'
               : x.action === 'due-skip' ? '远端日期已变化，跳过（等待轮询拉取）'
               : x.action === 'none' ? '无需处理'
               : x.action)
@@ -1131,8 +1132,9 @@
           var pushed = results.filter(function (x) { return x.ok && x.action === 'push'; }).length;
           var pulled = results.filter(function (x) { return x.ok && x.action === 'pull'; }).length;
           var duePushed = results.filter(function (x) { return x.ok && x.action === 'due-push'; }).length;
+          var duePulled = results.filter(function (x) { return x.ok && x.action === 'due-pull'; }).length;
           var failed = results.filter(function (x) { return !x.ok; }).length;
-          log('对账完成：完成状态分叉 ' + (r.diverged || 0) + ' 个（推送 ' + pushed + '，拉取 ' + pulled + '），日期分叉 ' + (r.dueDiverged || 0) + ' 个（推送 ' + duePushed + '），失败 ' + failed + '。', failed ? 'warn' : 'ok');
+          log('对账完成：完成状态分叉 ' + (r.diverged || 0) + ' 个（推送 ' + pushed + '，拉取 ' + pulled + '），日期分叉 ' + (r.dueDiverged || 0) + ' 个（推送 ' + duePushed + '，拉取时刻 ' + duePulled + '），失败 ' + failed + '。', failed ? 'warn' : 'ok');
           results.filter(function (x) { return !x.ok; }).forEach(function (x) {
             log('  · ' + (x.title || x.taskId) + '：' + (x.error || '未知错误'), 'err');
           });
