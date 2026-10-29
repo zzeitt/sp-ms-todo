@@ -43,6 +43,7 @@ import {
   DELETED_STATE,
   isDeleteSyncEnabled,
   filterIssuesByIds,
+  isLegacyTimedBaselineGap,
   findIssueProviderId,
   isMsTodoTask,
   isPushableTask,
@@ -539,7 +540,10 @@ const issueProviderDefinition: IssueProviderPluginDefinition = {
       if (typeof changes.dueWithTime === 'number' && Number.isFinite(changes.dueWithTime)) {
         patch.dueDateTime = buildDueDateTime(localDayOf(changes.dueWithTime));
       }
-    } else if (changes.dueDate !== undefined) {
+    }
+    // 独立判断而不是 else-if：清掉时刻（dueWithTime=null）时还要同时写日期，
+    // 否则「定时 → 纯日期」只会清提醒、日期留在旧值。
+    if (changes.dueDate !== undefined) {
       patch.dueDateTime = buildDueDateTime(changes.dueDate as string | null);
     }
 
@@ -1150,8 +1154,32 @@ async function reconcileDueForTask(
 
   const localDay = normDay(task.dueDay);
   const localTime = normTime(task.dueWithTime);
+  const baselineDay = normDay(lsv['dueDate']);
+  const baselineTime = normTime(lsv['dueWithTime']);
+
+  // 遗留缺口（0.1.10 之前把定时截止读成纯日期）：本地只剩日期，MS 有提醒时刻，
+  // 且基线自洽。用户的约定是「时间以 MS 为准」→ 把远端时刻拉回本地，绝不反向清提醒。
+  if (isLegacyTimedBaselineGap(localDay, localTime, baselineDay, baselineTime)) {
+    const remoteTime = freshTime ?? baselineTime;
+    await withHostDbRetry(() =>
+      PluginAPI.updateTask(task.id, {
+        dueWithTime: remoteTime,
+        issueLastSyncedValues: {
+          ...(task.issueLastSyncedValues ?? {}),
+          dueDate: freshDay ?? baselineDay,
+          dueWithTime: remoteTime,
+        },
+        ...(typeof fresh.lastUpdated === 'number' ? { issueLastUpdated: fresh.lastUpdated } : {}),
+      }),
+    );
+    return { action: 'due-pull', reason: 'pulled remote time into local (legacy gap)' };
+  }
+
   if (localTime !== null) {
     await updateIssue(issueId, { dueWithTime: localTime }, config, http);
+  } else if (baselineTime !== null) {
+    // 本地把「时刻」删掉了（定时 → 纯日期）：清远端提醒，同时写本地日期。
+    await updateIssue(issueId, { dueWithTime: null, dueDate: localDay }, config, http);
   } else {
     // localDay 为 null 时表示本地已清空日期：显式写 null 清除远端。
     await updateIssue(issueId, { dueDate: localDay }, config, http);

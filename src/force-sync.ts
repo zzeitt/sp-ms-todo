@@ -221,11 +221,9 @@ export function selectDueDivergences(tasks: SpTask[]): SpTask[] {
     // 基线却会带上 dueDateTime 的那一天），比下去会永远分叉、反复补推。
     if (localTime !== null && localTime === baselineTime) return false;
     // 「基线带时刻、本地只剩同一天的日期」是 0.1.10 之前遗留的拉取缺口
-    // （宿主的 field mapping 没把 dueWithTime 落到本地），不是用户改动；
-    // 推过去会清掉远端 09:33 那类提醒时刻，因此跳过。
-    if (isLegacyTimedBaselineGap(localDay, localTime, baselineDay, baselineTime)) {
-      return false;
-    }
+    // （宿主的 field mapping 没把 dueWithTime 落到本地）。这类任务要入选：
+    // 对账时按用户的约定「时间以 MS 为准」把时刻拉回本地，而不是推空远端提醒。
+    // 判据与动作见 isLegacyTimedBaselineGap / reconcileDueForTask。
     // 旧版本把纯日期写成 UTC 午夜（T00:00:00Z）→ 基线只有 dueWithTime=当地 08:00，
     // 没有 dueDate。此时按「时刻所在的那一天」比较，否则纯日期任务会永远分叉。
     if (localTime === null && baselineTime !== null && baselineDay === null) {
@@ -238,6 +236,11 @@ export function selectDueDivergences(tasks: SpTask[]): SpTask[] {
 /**
  * 基线有时刻、本地同一日期只剩纯日期 —— 旧版本遗留的映射缺口，不是真实改动。
  * 见 [[sp-date-time-mapping]]：0.1.10 之前定时截止被读成纯日期。
+ *
+ * 判据还要「基线自身自洽」：dueDate 必须等于提醒时刻所在的那一天。若基线是
+ * 「日期 10-30 + 提醒 10-29 20:00」这种不一致组合，说明用户真的清掉了时刻
+ * （或另一台设备只推了日期），必须补推把提醒清掉 —— 2026-10-29 的「修粉色包」
+ * 正是被这条放宽的判据误跳过。
  */
 export function isLegacyTimedBaselineGap(
   localDay: string | null,
@@ -245,7 +248,9 @@ export function isLegacyTimedBaselineGap(
   baselineDay: string | null,
   baselineTime: number | null,
 ): boolean {
-  return localTime === null && baselineTime !== null && localDay === baselineDay;
+  if (localTime !== null || baselineTime === null) return false;
+  if (localDay === null || localDay !== baselineDay) return false;
+  return localDayOf(baselineTime) === baselineDay;
 }
 
 /** 把已完成状态写进同步基线（保留其它已同步字段）。 */

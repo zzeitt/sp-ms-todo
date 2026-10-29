@@ -1,6 +1,6 @@
 {
   "name": "ms-todo-provider",
-  "version": "0.1.18",
+  "version": "0.1.20",
   "description": "Microsoft To Do issue provider plugin for Super Productivity (desktop)",
   "private": true,
   "scripts": {

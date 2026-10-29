@@ -219,7 +219,12 @@ The view is split into five functional tabs:
   tick locally; local completed → push `completed`; both completed → rewrite the baseline only.
   It also scans **due-date divergences** (local `dueDay`/`dueWithTime` vs the baseline): when
   the remote date is unchanged the local date is pushed, otherwise the row is skipped so the
-  poll can pull the remote value. Each row shows the action taken and any error, so missed
+  poll can pull the remote value. The legacy gap ("local date only, To Do has a reminder
+  time", caused by the pre-0.1.10 mapping reading timed due dates as date-only) is healed the
+  other way round — the remote time is pulled into the local task (`due-pull`), never the
+  other way, because To Do owns the time. Only a genuine "user removed the time" (baseline
+  date and reminder on different days) clears the remote reminder (`due-push`). Each row
+  shows the action taken and any error, so missed
   pushes, edits synced from another device, and stale baselines can be repaired without
   waiting for the next poll.
 - **Cleanup**: browse To Do tasks per list with inline actions — unlink already-linked tasks
