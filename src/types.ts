@@ -212,6 +212,8 @@ export interface PluginAPI {
   getSelectedTask(): Promise<SpTask | null>;
   getFocusedTask(): Promise<SpTask | null>;
   getTasks(): Promise<SpTask[]>;
+  /** 已完成任务会被移出 getTasks()，只在这里可见（宿主 19.x 起提供）。 */
+  getArchivedTasks?(): Promise<SpTask[]>;
   getAllProjects(): Promise<SpProject[]>;
   getAllTags(): Promise<SpTag[]>;
   getActiveWorkContext(): Promise<WorkContext | null>;

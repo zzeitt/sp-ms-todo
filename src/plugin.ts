@@ -82,6 +82,9 @@ const PLUGIN_VERSION = process.env.PLUGIN_VERSION || 'dev';
 // 密钥存储（本地、每设备、不进 sync/备份），模块级单例即可。
 const secrets = createSecretStore();
 
+// 最近一次 provider 调用收到的 config 的持久副本（不含令牌），见 cacheContext。
+const CONFIG_CACHE_SECRET = 'ms-todo-cached-config';
+
 // 生命周期日志（写入宿主的插件日志，桌面 / 移动端都能在「设置 → 插件」里查看）。
 // 任何一步都不能抛错：这里只用于在移动端排查「视图入口为何没出现」时定位卡在哪一步。
 function lifecycle(msg: string): void {
@@ -110,7 +113,23 @@ let cachedHttp: PluginHttp | undefined;
 function cacheContext(config: Record<string, unknown>, http: PluginHttp): void {
   cachedConfig = config;
   cachedHttp = http;
+  // 再持久化一份：宿主重启后、第一次轮询调用 provider 之前，插件拿不到注入的
+  // config，兜底对账（每 5 分钟）会整轮跳过。配置里没有令牌（令牌单独存），
+  // 放进设备本地密钥存储没有额外暴露面；内容没变就不重复写。
+  try {
+    const json = JSON.stringify(config);
+    if (json !== lastPersistedConfigJson) {
+      lastPersistedConfigJson = json;
+      void secrets.set(CONFIG_CACHE_SECRET, json).catch(() => {
+        lastPersistedConfigJson = '';
+      });
+    }
+  } catch {
+    // 配置不可序列化时忽略，绝不影响 provider 调用。
+  }
 }
+
+let lastPersistedConfigJson = '';
 
 // MS 任务 id → 所在列表 id 的小缓存（有界）。用途：
 //   - getByIds 批量拉取时记住每个任务的列表；
@@ -624,7 +643,17 @@ function missingConfigError(): Error {
 }
 
 async function resolveConfig(): Promise<Record<string, unknown>> {
-  const config = cachedConfig ?? (await withHostDbRetry(() => PluginAPI.getConfig())) ?? undefined;
+  if (cachedConfig) return cachedConfig;
+  try {
+    const raw = await secrets.get(CONFIG_CACHE_SECRET);
+    if (raw) {
+      cachedConfig = JSON.parse(raw) as Record<string, unknown>;
+      return cachedConfig;
+    }
+  } catch {
+    // 读缓存失败就继续走宿主 API。
+  }
+  const config = (await withHostDbRetry(() => PluginAPI.getConfig())) ?? undefined;
   if (!config) throw missingConfigError();
   return config;
 }
@@ -685,7 +714,14 @@ async function buildOverview(limit?: number): Promise<ListsOverview> {
 
 /** 判断 Graph 错误是否为 404（远端任务已不存在）。graphRequest 会把宿主 status 挂到 Error 上。 */
 function isNotFoundError(e: unknown): boolean {
-  return (e as { status?: unknown } | null | undefined)?.status === 404;
+  const status = (e as { status?: unknown } | null | undefined)?.status;
+  if (status === 404 || status === 410) return true;
+  // To Do 不是所有「此列表里没有该任务」都报 404：按错误的 listId 读取时 Graph 返回
+  // 400 invalidRequest + "Parent folder specified does not contain a Task with given
+  // Id"（2026-10-29 实测）。不把它当 not-found 就永远不会走跨列表自愈，
+  // 表现为该任务的所有读写都失败。
+  const message = e instanceof Error ? e.message : String(e ?? '');
+  return /does not contain a Task with given Id|ErrorItemNotFound|itemNotFound/i.test(message);
 }
 
 /**
@@ -843,7 +879,22 @@ async function safeGetAllTags(): Promise<SpTag[]> {
 
 /** 取全部 SP 任务。宿主任务存储同样是 IndexedDB，移动端会偶发「连接正在关闭」瞬态错误，故重试。 */
 async function getAllTasks(): Promise<SpTask[]> {
-  return withHostDbRetry(() => PluginAPI.getTasks());
+  // 宿主的 getTasks() 只返回未完成任务：任务一打勾就进 archive，插件看不到。
+  // 完成态对账 / 兜底必须把归档一起读出来，否则「本地已完成、远端未完成」的分叉
+  // 永远不会被发现（2026-10-28 的「找黑色裤」即如此）。
+  const [active, archived] = await Promise.all([
+    withHostDbRetry(() => PluginAPI.getTasks()),
+    typeof PluginAPI.getArchivedTasks === 'function'
+      ? withHostDbRetry(() => PluginAPI.getArchivedTasks?.() ?? Promise.resolve([]))
+      : Promise.resolve([]),
+  ]);
+  if (!archived.length) return active;
+  const seen = new Set(active.map((t) => t.id));
+  const merged = active.slice();
+  for (const task of archived) {
+    if (!seen.has(task.id)) merged.push(task);
+  }
+  return merged;
 }
 
 // --- 完成状态兜底同步 ---
@@ -851,19 +902,6 @@ async function getAllTasks(): Promise<SpTask[]> {
 // 宿主的 two-way-sync 推送只在任务更新动作时触发，失败（瞬时网络 / 桌面 CORS
 // status=0）不会重试；provider-changed 跳过后也不会补。拉取方向又可能因批次过长
 // 被宿主取消。这里在插件侧补一条“幂等 + 可重试 + 可观测”的完成状态通道。
-
-/** hook / 视图 RPC 里没有宿主注入的 config，只能用最近一次 issueProvider 调用缓存的。 */
-function requireCachedConfig(): Record<string, unknown> {
-  if (!cachedConfig) {
-    throw new Error(
-      t({
-        zh: '尚无插件配置缓存：请先打开插件配置或等待一次同步，再重试。',
-        en: 'No cached plugin config yet. Open the plugin settings or wait for one sync, then retry.',
-      }),
-    );
-  }
-  return cachedConfig;
-}
 
 const baselineStateOf = (task: SpTask): string | undefined => {
   const state = task.issueLastSyncedValues?.['state'];
@@ -891,7 +929,7 @@ function markPushedCompletion(issueId: string): void {
 async function syncCompletionForTask(
   task: SpTask,
 ): Promise<{ action: string; reason: string }> {
-  const config = requireCachedConfig();
+  const config = await resolveConfig();
   const http = resolveHttp();
   const issueId = task.issueId as string;
   const updateIssue = issueProviderDefinition.updateIssue;
@@ -956,7 +994,7 @@ const COMPLETION_SAFETY_DELAY_MS = 4000;
  * 已把 issueLastSyncedValues.state 写成 completed，这里就什么都不做；只有宿主没推
  * 成功（或被 provider-changed 跳过）时才由插件补推。
  */
-function scheduleCompletionSafetyNet(taskId: string): void {
+function scheduleCompletionSafetyNet(taskId: string, snapshot?: SpTask): void {
   const prev = completionSafetyTimers.get(taskId);
   if (prev) clearTimeout(prev);
   const timer = setTimeout(() => {
@@ -964,7 +1002,7 @@ function scheduleCompletionSafetyNet(taskId: string): void {
     void (async () => {
       try {
         const all = await getAllTasks();
-        const task = all.find((t) => t.id === taskId);
+        const task = all.find((t) => t.id === taskId) ?? snapshot;
         if (!task || !task.isDone || !task.issueId) return;
         if (pushedCompletionIssues.has(task.issueId)) return;
         if (!shouldPushCompletionOnUpdate(task, { isDone: true })) return;
@@ -1005,7 +1043,7 @@ function registerCompletionSyncHook(): void {
         return;
       }
       if (!shouldPushCompletionOnUpdate(task, payload?.changes)) return;
-      scheduleCompletionSafetyNet((task as SpTask).id);
+      scheduleCompletionSafetyNet((task as SpTask).id, task as SpTask);
     });
     lifecycle('taskUpdate hook registered (completion safety-net)');
   } catch (e) {
@@ -1022,7 +1060,7 @@ function registerCompletionSyncHook(): void {
  * 返回逐条结果（含错误），供视图展示。
  */
 async function reconcileCompletions(): Promise<RpcResult> {
-  requireCachedConfig();
+  await resolveConfig();
   const all = await getAllTasks();
   const diverged = selectCompletionDivergences(all);
   const dueDiverged = selectDueDivergences(all);
@@ -1085,7 +1123,7 @@ async function reconcileCompletions(): Promise<RpcResult> {
 async function reconcileDueForTask(
   task: SpTask,
 ): Promise<{ action: string; reason: string }> {
-  const config = requireCachedConfig();
+  const config = await resolveConfig();
   const http = resolveHttp();
   const issueId = task.issueId as string;
   const updateIssue = issueProviderDefinition.updateIssue;
@@ -1099,7 +1137,14 @@ async function reconcileDueForTask(
 
   const freshDay = normDay(fresh.dueDate);
   const freshTime = normTime(fresh.dueWithTime);
-  if (freshDay !== normDay(lsv['dueDate']) || freshTime !== normTime(lsv['dueWithTime'])) {
+  // 基线里的 dueDate 可能为空而远端有日期：定时任务（dueDateTime=当天 + 提醒）的
+  // 日期由 dueWithTime 派生，基线是宿主按「本地只有 dueWithTime」写的。这种
+  // 「时刻一致、日期多出来」不是远端改动，否则永远判 due-skip（2026-10-29 实测）。
+  const sameInstant =
+    freshTime !== null && freshTime === normTime(lsv['dueWithTime']);
+  const dayChanged = !sameInstant && freshDay !== normDay(lsv['dueDate']);
+  const timeChanged = freshTime !== normTime(lsv['dueWithTime']);
+  if (dayChanged || timeChanged) {
     return { action: 'due-skip', reason: 'remote due changed; pull will reconcile' };
   }
 
@@ -1127,6 +1172,131 @@ async function reconcileDueForTask(
     action: 'due-push',
     reason: localTime !== null ? 'pushed timed due' : 'pushed planned day',
   };
+}
+
+/** 单任务补推：完成态 + 计划日期各查一次分叉，有分叉就补推（视图/RPC 用）。 */
+async function pushTaskDivergence(taskId: string): Promise<RpcResult> {
+  const config = await resolveConfig();
+  const all = await getAllTasks();
+  const task = all.find((t) => t.id === taskId);
+  if (!task) return { ok: false, error: 'task not found: ' + taskId };
+  const results: Array<Record<string, unknown>> = [];
+  // 附上远端现值：排查「远端已改 → due-skip」时不用再猜。
+  let remote: Record<string, unknown> | undefined;
+  try {
+    const fresh = await issueProviderDefinition.getById(
+      task.issueId as string,
+      config,
+      resolveHttp(),
+    );
+    remote = {
+      state: fresh.state,
+      dueDate: fresh.dueDate,
+      dueWithTime: fresh.dueWithTime,
+      lastUpdated: fresh.lastUpdated,
+    };
+  } catch {
+    remote = undefined;
+  }
+  if (selectCompletionDivergences([task]).length) {
+    results.push({ kind: 'completion', ...(await syncCompletionForTask(task)) });
+  }
+  if (selectDueDivergences([task]).length) {
+    results.push({ kind: 'due', ...(await reconcileDueForTask(task)) });
+  }
+  return {
+    ok: true,
+    taskId,
+    title: task.title,
+    local: { isDone: !!task.isDone, dueDay: task.dueDay, dueWithTime: task.dueWithTime },
+    baseline: task.issueLastSyncedValues,
+    remote,
+    results,
+  };
+}
+
+// --- 后台对账（跨设备兜底） ---
+//
+// 另一台设备（手机）上打勾 / 改计划日期时，本机只会在「拉取」方向看到新状态：
+// 宿主的推送效果器只对本地任务更新动作触发，不会为同步进来的改动补推，于是 MS
+// 永远停在旧状态（2026-10-28 23:25 的「找黑色裤」就是这样漏掉的）。
+// 这里每 5 分钟扫一次分叉并补推 —— 任何一台装了插件的设备在线，都能把改动带到 MS。
+const SWEEP_INTERVAL_MS = 5 * 60_000;
+const SWEEP_FIRST_DELAY_MS = 120_000;
+const SWEEP_MAX_PER_RUN = 20;
+let sweepStarted = false;
+let sweepInFlight = false;
+
+async function runDivergenceSweep(reason: string): Promise<void> {
+  if (sweepInFlight) return;
+  sweepInFlight = true;
+  try {
+    const all = await getAllTasks();
+    // 归档任务的基线可能写不回去（宿主对归档任务 updateTask 有限制），用进程内标记
+    // 防止每轮重复推同一个完成态；取消打勾时 hook 会清掉标记。
+    const completions = selectCompletionDivergences(all)
+      .filter((task) => !pushedCompletionIssues.has(task.issueId as string))
+      .slice(0, SWEEP_MAX_PER_RUN);
+    // 自动补推只处理「今天或未来」的日期：历史逾期日期上的分叉多半是 0.1.10 之前
+    // 遗留的 UTC/日期换算漂移（用户已约定 MS 为准），自动推会把错误的本地日期写回
+    // MS。这类留给「对账」页人工确认。
+    const today = localDayOf(Date.now());
+    const dues = selectDueDivergences(all)
+      .filter((task) => {
+        const day =
+          typeof task.dueDay === 'string' && task.dueDay
+            ? task.dueDay
+            : typeof task.dueWithTime === 'number'
+              ? localDayOf(task.dueWithTime)
+              : null;
+        return day !== null && day >= today;
+      })
+      .slice(0, SWEEP_MAX_PER_RUN);
+    if (!completions.length && !dues.length) return;
+    let ok = 0;
+    const failures: string[] = [];
+    for (const task of completions) {
+      try {
+        const decision = await syncCompletionForTask(task);
+        ok++;
+        lifecycle(`sweep[${reason}] completion ${decision.action} · ${task.title}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        failures.push(`${task.id}: ${msg}`);
+        lifecycle(`sweep[${reason}] completion failed ${task.id}: ${msg}`);
+      }
+    }
+    for (const task of dues) {
+      try {
+        const decision = await reconcileDueForTask(task);
+        ok++;
+        lifecycle(`sweep[${reason}] due ${decision.action} · ${task.title}`);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        failures.push(`${task.id}: ${msg}`);
+        lifecycle(`sweep[${reason}] due failed ${task.id}: ${msg}`);
+      }
+    }
+    lifecycle(
+      `sweep[${reason}] done: ${completions.length} completion + ${dues.length} due, ok=${ok}, fail=${failures.length}`,
+    );
+  } catch (e) {
+    lifecycle('sweep failed: ' + (e instanceof Error ? e.message : String(e)));
+  } finally {
+    sweepInFlight = false;
+  }
+}
+
+function startDivergenceSweep(): void {
+  if (sweepStarted) return;
+  sweepStarted = true;
+  try {
+    setTimeout(() => void runDivergenceSweep('startup'), SWEEP_FIRST_DELAY_MS);
+    setInterval(() => void runDivergenceSweep('interval'), SWEEP_INTERVAL_MS);
+    lifecycle('divergence sweep scheduled');
+  } catch (e) {
+    lifecycle('sweep scheduling failed: ' + (e instanceof Error ? e.message : String(e)));
+  }
 }
 
 /** 给任务补上「所属项目名 / 标签名」等人类可读信息（SP 任务实体只有 id）。 */
@@ -1826,6 +1996,8 @@ if (typeof PluginAPI.onMessage === 'function') {
             return await scanDeadLinks();
           case 'reconcile':
             return await reconcileCompletions();
+          case 'pushTask':
+            return await pushTaskDivergence(String(msg.taskId ?? ''));
           case 'unlink':
             return await unlinkTask(String(msg.taskId ?? ''));
           case 'recreateLink':
@@ -1859,9 +2031,11 @@ if (typeof PluginAPI.onReady === 'function') {
     lifecycle('onReady fired');
     registerCompletionSyncHook();
     registerViewEntry();
+    startDivergenceSweep();
   });
 } else {
   lifecycle('onReady unavailable, registering view entry directly');
   registerCompletionSyncHook();
   registerViewEntry();
+  startDivergenceSweep();
 }

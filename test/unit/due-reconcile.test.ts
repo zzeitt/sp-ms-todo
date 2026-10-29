@@ -44,6 +44,47 @@ describe('selectDueDivergences（日期对账）', () => {
     expect(selectDueDivergences(same)).toEqual([]);
   });
 
+  it('已完成任务一律不入选（SP 打勾会清空本地日期，不能拿去清远端）', () => {
+    const t = task({ isDone: true, issueLastSyncedValues: { dueDate: '2026-08-21' } });
+    expect(selectDueDivergences([t])).toEqual([]);
+  });
+
+  it('基线带时刻、本地同一日期只剩纯日期 → 旧版本映射缺口，不入选', () => {
+    const t = task({
+      dueDay: '2026-11-07',
+      issueLastSyncedValues: {
+        dueDate: '2026-11-07',
+        dueWithTime: new Date(2026, 10, 7, 9, 33).getTime(),
+      },
+    });
+    expect(selectDueDivergences([t])).toEqual([]);
+  });
+
+  it('基线只有旧版 UTC 午夜时刻、本地同一日期 → 不入选', () => {
+    const t = task({
+      dueDay: '2026-08-15',
+      issueLastSyncedValues: { dueWithTime: new Date(2026, 7, 15, 0, 0).getTime() },
+    });
+    expect(selectDueDivergences([t])).toEqual([]);
+  });
+
+  it('两边时刻相同、基线多出派生 dueDate → 不入选', () => {
+    const ts = new Date(2026, 9, 29, 20, 0).getTime();
+    const t = task({
+      dueWithTime: ts,
+      issueLastSyncedValues: { dueDate: '2026-10-29', dueWithTime: ts },
+    });
+    expect(selectDueDivergences([t])).toEqual([]);
+  });
+
+  it('本地把定时推迟一天 → 入选（真实改动）', () => {
+    const t = task({
+      dueWithTime: new Date(2026, 9, 29, 20, 0).getTime(),
+      issueLastSyncedValues: { dueWithTime: new Date(2026, 9, 28, 20, 0).getTime() },
+    });
+    expect(selectDueDivergences([t]).map((x) => x.id)).toEqual(['t1']);
+  });
+
   it('忽略其它 provider / 未链接任务', () => {
     const others = [
       task({ issueType: 'plugin:other', dueDay: '2026-10-27', issueLastSyncedValues: {} }),

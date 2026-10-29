@@ -209,12 +209,43 @@ export function selectDueDivergences(tasks: SpTask[]): SpTask[] {
     typeof v === 'number' && Number.isFinite(v) ? v : null;
   return tasks.filter((task) => {
     if (!isMsTodoTask(task) || !task.issueId) return false;
+    // 已完成任务：SP 打勾时会清掉本地 dueDay/dueWithTime，基线还留着旧日期。
+    // 把这种「清空」推到 MS 会抹掉远端已完成任务的历史截止日，永远不要推。
+    if (task.isDone) return false;
     const lsv = task.issueLastSyncedValues as Record<string, unknown> | undefined;
-    return (
-      asDay(task.dueDay) !== asDay(lsv?.['dueDate']) ||
-      asTime(task.dueWithTime) !== asTime(lsv?.['dueWithTime'])
-    );
+    const localDay = asDay(task.dueDay);
+    const localTime = asTime(task.dueWithTime);
+    const baselineDay = asDay(lsv?.['dueDate']);
+    const baselineTime = asTime(lsv?.['dueWithTime']);
+    // 两边时刻相同 → 视为一致：定时任务的 dueDate 是派生值（SP 本地 dueDay 为空，
+    // 基线却会带上 dueDateTime 的那一天），比下去会永远分叉、反复补推。
+    if (localTime !== null && localTime === baselineTime) return false;
+    // 「基线带时刻、本地只剩同一天的日期」是 0.1.10 之前遗留的拉取缺口
+    // （宿主的 field mapping 没把 dueWithTime 落到本地），不是用户改动；
+    // 推过去会清掉远端 09:33 那类提醒时刻，因此跳过。
+    if (isLegacyTimedBaselineGap(localDay, localTime, baselineDay, baselineTime)) {
+      return false;
+    }
+    // 旧版本把纯日期写成 UTC 午夜（T00:00:00Z）→ 基线只有 dueWithTime=当地 08:00，
+    // 没有 dueDate。此时按「时刻所在的那一天」比较，否则纯日期任务会永远分叉。
+    if (localTime === null && baselineTime !== null && baselineDay === null) {
+      return localDay !== localDayOf(baselineTime);
+    }
+    return localDay !== baselineDay || localTime !== baselineTime;
   });
+}
+
+/**
+ * 基线有时刻、本地同一日期只剩纯日期 —— 旧版本遗留的映射缺口，不是真实改动。
+ * 见 [[sp-date-time-mapping]]：0.1.10 之前定时截止被读成纯日期。
+ */
+export function isLegacyTimedBaselineGap(
+  localDay: string | null,
+  localTime: number | null,
+  baselineDay: string | null,
+  baselineTime: number | null,
+): boolean {
+  return localTime === null && baselineTime !== null && localDay === baselineDay;
 }
 
 /** 把已完成状态写进同步基线（保留其它已同步字段）。 */
